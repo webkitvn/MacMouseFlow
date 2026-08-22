@@ -32,6 +32,10 @@ _Avoid_: Raw input, native event
 An Input Event representing scroll movement along one or more axes.
 _Avoid_: Wheel event
 
+**Scroll Granularity**:
+The semantic unit of a Scroll Event: LineBased when movement is expressed as discrete line steps, or PixelBased when movement is continuous at pixel precision. Scroll Granularity is an event characteristic and must not be treated as proof of Source Class or Device Identity.
+_Avoid_: Mouse scroll, trackpad scroll when only granularity is known
+
 ## Configuration
 
 **Scroll Configuration**:
