@@ -39,8 +39,12 @@ _Avoid_: Mouse scroll, trackpad scroll when only granularity is known
 ## Configuration
 
 **Scroll Configuration**:
-The user-chosen scroll behavior applied to a matching Input Source, Source Class, or default scope.
+The user-chosen scroll behavior, such as direction or Scroll Amount, applied to a matching Input Source, Source Class, or default scope.
 _Avoid_: Scroll settings when referring to the domain concept
+
+**Scroll Amount**:
+The user-chosen relative magnitude of LineBased scroll movement. A neutral amount preserves the original magnitude; lower or higher amounts reduce or increase it without defining temporal acceleration, smoothing, or momentum.
+_Avoid_: Scroll speed, sensitivity, multiplier when referring to the domain concept
 
 **Device Profile**:
 A persistent set of user configuration associated with one Pointing Device.
