@@ -45,8 +45,8 @@ For manual inspection or diagnosis:
 gh issue view ISSUE -R OWNER/REPO --comments \
   --json number,title,body,state,stateReason,labels,milestone,parent,subIssues,blockedBy,blocking,assignees,comments,url
 
-gh repo read-file CONTEXT.md -R OWNER/REPO \
-  || gh api repos/OWNER/REPO/contents/CONTEXT.md -H 'Accept: application/vnd.github.raw+json'
+gh api repos/OWNER/REPO/contents/CONTEXT.md \
+  -H 'Accept: application/vnd.github.raw+json'
 ```
 
 Native GitHub milestone, hierarchy, dependency, label, assignee, and state metadata are canonical whenever the active tracker/dev environment exposes the required operations. A Markdown/body relationship graph is compatibility-only when native mutation is unavailable. If a current context declares such a fallback, surface that degraded tracker mode explicitly; do not silently compute a supposedly canonical frontier from an incomplete native graph.
