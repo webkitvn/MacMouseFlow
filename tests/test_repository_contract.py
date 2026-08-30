@@ -83,6 +83,15 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertNotIn("current milestone", readme.lower())
         self.assertNotIn("current frontier", readme.lower())
 
+    def test_agents_cold_start_uses_declared_standard_gh_commands(self):
+        agents = (ROOT / "AGENTS.md").read_text()
+        self.assertIn("work:current", agents)
+        self.assertIn("just frontier", agents)
+        self.assertIn("just next", agents)
+        self.assertIn("gh api repos/OWNER/REPO/contents/CONTEXT.md", agents)
+        self.assertNotIn("gh repo read-file", agents)
+        self.assertIn("Do not treat chat history as project truth", agents)
+
 
 if __name__ == "__main__":
     unittest.main()
