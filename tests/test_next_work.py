@@ -71,6 +71,23 @@ class NextWorkContractTests(unittest.TestCase):
             }
         ]
 
+    def test_frontier_reports_missing_gh_executable_without_traceback(self):
+        env = os.environ.copy()
+        env["GH_BIN"] = str(ROOT / "definitely-missing-gh")
+
+        result = subprocess.run(
+            ["python3", str(SCRIPT), "frontier"],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GH_NOT_FOUND", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_frontier_fails_when_no_current_context_exists(self):
         result = self.run_command("frontier", self.base_responses([]))
 
