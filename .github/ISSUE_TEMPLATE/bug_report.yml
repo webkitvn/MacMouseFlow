@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible defect with diagnostic evidence.
+title: "[Bug] "
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: What happened, including the user-visible state when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the expected behavior from a canonical contract or product outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal steps or command needed to reproduce the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Link or paste bounded, non-sensitive verification or trace evidence. Do not include private external-source mappings.
+  - type: textarea
+    id: context
+    attributes:
+      label: Canonical context
+      description: Link relevant Issue, ADR, guardrail, or research evidence if known.
