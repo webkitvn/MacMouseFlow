@@ -69,6 +69,8 @@ class RepositoryContractTests(unittest.TestCase):
         )
 
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("actions/checkout@v6", workflow)
+        self.assertNotIn("actions/checkout@v4", workflow)
         self.assertIn("just ci", workflow)
         self.assertIn("ci-gate", workflow)
         self.assertIn("macos-15", workflow)
