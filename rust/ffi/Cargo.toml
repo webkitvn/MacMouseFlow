@@ -1,0 +1,11 @@
+[package]
+name = "pointer-input-ffi"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pointer-input-engine = { path = "../engine" }
+
+[lib]
+path = "src/lib.rs"
