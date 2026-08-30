@@ -125,6 +125,51 @@ class NextWorkContractTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("RELATIONSHIP_COMPATIBILITY_MODE", result.stderr)
 
+    def test_next_reports_fully_claimed_when_all_unblocked_work_is_claimed(self):
+        responses = self.base_responses(self.current_epic())
+        responses.update(
+            {
+                "issue view 49 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": {
+                    "number": 49,
+                    "title": "M0",
+                    "body": "",
+                    "state": "OPEN",
+                    "labels": [{"name": "work:current"}, {"name": "execution:epic"}],
+                    "assignees": [],
+                    "blockedBy": [],
+                    "subIssues": [{"number": 63}, {"number": 64}],
+                    "url": "u49",
+                },
+                "issue view 63 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": {
+                    "number": 63,
+                    "title": "Blocked P0",
+                    "body": "",
+                    "state": "OPEN",
+                    "labels": [{"name": "execution:task"}, {"name": "priority:P0"}],
+                    "assignees": [],
+                    "blockedBy": [{"number": 47, "state": "OPEN"}],
+                    "subIssues": [],
+                    "url": "u63",
+                },
+                "issue view 64 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": {
+                    "number": 64,
+                    "title": "Claimed P0",
+                    "body": "",
+                    "state": "OPEN",
+                    "labels": [{"name": "execution:task"}, {"name": "priority:P0"}],
+                    "assignees": [{"login": "agent"}],
+                    "blockedBy": [],
+                    "subIssues": [],
+                    "url": "u64",
+                },
+            }
+        )
+
+        result = self.run_command("next", responses)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FRONTIER_FULLY_CLAIMED", result.stderr)
+
     def test_next_selects_lowest_number_from_highest_priority_unblocked_unclaimed_tasks(self):
         responses = self.base_responses(self.current_epic())
         responses.update(
