@@ -22,7 +22,7 @@ class RepositoryContractTests(unittest.TestCase):
             "tests/contract/README.md",
             "rust-toolchain.toml",
             ".xcode-version",
-            "scripts/check_toolchain.py",
+            "scripts/verify_toolchain.py",
             ".githooks/pre-commit",
             ".githooks/pre-push",
             ".github/workflows/ci.yml",
@@ -54,7 +54,7 @@ class RepositoryContractTests(unittest.TestCase):
             "next:",
         ]:
             self.assertIn(recipe, justfile, f"missing canonical recipe {recipe}")
-        self.assertIn("python3 scripts/check_toolchain.py", justfile)
+        self.assertIn("python3 scripts/verify_toolchain.py", justfile)
         self.assertIn("cargo build --workspace", justfile)
         self.assertIn("ci: check test build", justfile)
 
