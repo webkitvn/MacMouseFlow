@@ -17,12 +17,18 @@ def fail(code: str, message: str) -> "NoReturn":
 
 def gh_text(*args: str) -> str:
     gh = os.environ.get("GH_BIN", "gh")
-    result = subprocess.run(
-        [gh, *args],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [gh, *args],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        fail(
+            "GH_NOT_FOUND",
+            f"GitHub CLI executable not found: {gh}; install gh or set GH_BIN to a valid executable",
+        )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "gh command failed"
         fail("GH_ERROR", detail)
