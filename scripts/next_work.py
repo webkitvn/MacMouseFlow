@@ -129,6 +129,15 @@ def task_priority(task):
     return priorities[0]
 
 
+def assert_native_relationship_mode(current):
+    body = str(current.get("body") or "").lower()
+    if "hierarchy compatibility note" in body or "compatibility fallback" in body:
+        fail(
+            "RELATIONSHIP_COMPATIBILITY_MODE",
+            "current execution context declares temporary relationship fallback; native hierarchy/dependencies must be wired before automatic frontier selection",
+        )
+
+
 def frontier(repo: str, current_summary) -> list[tuple[str, dict]]:
     current = issue_view(repo, current_summary["number"])
     if "execution:epic" not in label_names(current):
@@ -136,6 +145,8 @@ def frontier(repo: str, current_summary) -> list[tuple[str, dict]]:
             "INVALID_CURRENT_CONTEXT",
             f"open work:current issue #{current.get('number')} is not an execution:epic",
         )
+
+    assert_native_relationship_mode(current)
 
     open_tasks = []
     for issue in collect_descendants(repo, current):
