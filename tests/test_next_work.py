@@ -60,6 +60,17 @@ class NextWorkContractTests(unittest.TestCase):
             "issue list -R owner/repo --label work:current --state open --json number,title,labels,url": current,
         }
 
+    @staticmethod
+    def current_epic():
+        return [
+            {
+                "number": 49,
+                "title": "M0",
+                "labels": [{"name": "work:current"}, {"name": "execution:epic"}],
+                "url": "u49",
+            }
+        ]
+
     def test_frontier_fails_when_no_current_context_exists(self):
         result = self.run_command("frontier", self.base_responses([]))
 
@@ -76,16 +87,29 @@ class NextWorkContractTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("AMBIGUOUS_CURRENT_CONTEXT", result.stderr)
 
+    def test_next_stops_when_tracker_declares_relationship_compatibility_fallback(self):
+        responses = self.base_responses(self.current_epic())
+        responses[
+            "issue view 49 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url"
+        ] = {
+            "number": 49,
+            "title": "M0",
+            "body": "## Hierarchy compatibility note\n\nNative relationships are canonical. Current edges use compatibility fallback until native mutation is available.",
+            "state": "OPEN",
+            "labels": [{"name": "work:current"}, {"name": "execution:epic"}],
+            "assignees": [],
+            "blockedBy": [],
+            "subIssues": [{"number": 47}],
+            "url": "u49",
+        }
+
+        result = self.run_command("next", responses)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("RELATIONSHIP_COMPATIBILITY_MODE", result.stderr)
+
     def test_next_selects_lowest_number_from_highest_priority_unblocked_unclaimed_tasks(self):
-        current = [
-            {
-                "number": 49,
-                "title": "M0",
-                "labels": [{"name": "work:current"}, {"name": "execution:epic"}],
-                "url": "u49",
-            }
-        ]
-        responses = self.base_responses(current)
+        responses = self.base_responses(self.current_epic())
         responses.update(
             {
                 "issue view 49 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": {
