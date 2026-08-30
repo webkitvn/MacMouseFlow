@@ -6,6 +6,10 @@ import subprocess
 import sys
 
 
+ISSUE_FIELDS = "number,title,body,state,labels,assignees,blockedBy,subIssues,url"
+PRIORITY_RANK = {"priority:P0": 0, "priority:P1": 1, "priority:P2": 2}
+
+
 def fail(code: str, message: str) -> "NoReturn":
     print(f"{code}: {message}", file=sys.stderr)
     raise SystemExit(2)
@@ -68,14 +72,124 @@ def current_context(repo: str):
     return issues[0]
 
 
+def label_names(issue) -> set[str]:
+    names = set()
+    for label in issue.get("labels") or []:
+        if isinstance(label, dict) and label.get("name"):
+            names.add(label["name"])
+        elif isinstance(label, str):
+            names.add(label)
+    return names
+
+
+def issue_view(repo: str, number: int):
+    issue = gh_json(
+        "issue",
+        "view",
+        str(number),
+        "-R",
+        repo,
+        "--json",
+        ISSUE_FIELDS,
+    )
+    if not isinstance(issue, dict):
+        fail("INVALID_TRACKER_RESPONSE", f"issue #{number} did not return an object")
+    return issue
+
+
+def is_open(item) -> bool:
+    return str(item.get("state", "")).lower() == "open"
+
+
+def collect_descendants(repo: str, root) -> list[dict]:
+    descendants = []
+    seen = set()
+
+    def visit(parent):
+        for child_ref in parent.get("subIssues") or []:
+            number = child_ref.get("number") if isinstance(child_ref, dict) else None
+            if not isinstance(number, int) or number in seen:
+                continue
+            seen.add(number)
+            child = issue_view(repo, number)
+            descendants.append(child)
+            visit(child)
+
+    visit(root)
+    return descendants
+
+
+def task_priority(task):
+    priorities = sorted(label_names(task) & PRIORITY_RANK.keys())
+    if len(priorities) != 1:
+        fail(
+            "INVALID_PRIORITY_METADATA",
+            f"execution task #{task.get('number')} must have exactly one priority:P0/P1/P2 label",
+        )
+    return priorities[0]
+
+
+def frontier(repo: str, current_summary) -> list[tuple[str, dict]]:
+    current = issue_view(repo, current_summary["number"])
+    if "execution:epic" not in label_names(current):
+        fail(
+            "INVALID_CURRENT_CONTEXT",
+            f"open work:current issue #{current.get('number')} is not an execution:epic",
+        )
+
+    open_tasks = []
+    for issue in collect_descendants(repo, current):
+        if "execution:task" in label_names(issue) and is_open(issue):
+            priority = task_priority(issue)
+            open_tasks.append((priority, issue))
+
+    if not open_tasks:
+        fail("NO_OPEN_LEAF_WORK", "current execution context has no open execution:task descendants")
+
+    eligible = []
+    blocked_count = 0
+    claimed_count = 0
+    for priority, task in open_tasks:
+        blockers = [blocker for blocker in (task.get("blockedBy") or []) if is_open(blocker)]
+        if blockers:
+            blocked_count += 1
+            continue
+        if task.get("assignees"):
+            claimed_count += 1
+            continue
+        eligible.append((priority, task))
+
+    if not eligible:
+        if blocked_count == len(open_tasks):
+            fail("BLOCKED_FRONTIER", "all open execution tasks are blocked")
+        if claimed_count == len(open_tasks):
+            fail("FRONTIER_FULLY_CLAIMED", "all otherwise eligible execution tasks are claimed")
+        fail("NO_FRONTIER", "all open execution tasks are blocked or claimed")
+
+    eligible.sort(key=lambda item: (PRIORITY_RANK[item[0]], item[1]["number"]))
+    return eligible
+
+
+def render(priority: str, task: dict) -> str:
+    url = task.get("url") or ""
+    return f"{priority.removeprefix('priority:')} #{task['number']} {task.get('title', '')} {url}".rstrip()
+
+
 def main() -> int:
     if len(sys.argv) != 2 or sys.argv[1] not in {"frontier", "next"}:
         print("usage: next_work.py {frontier|next}", file=sys.stderr)
         return 64
 
     repo = repository()
-    current_context(repo)
-    fail("NOT_READY", "frontier traversal is not implemented yet")
+    current = current_context(repo)
+    items = frontier(repo, current)
+
+    if sys.argv[1] == "next":
+        print(render(*items[0]))
+    else:
+        for item in items:
+            print(render(*item))
+    return 0
 
 
 if __name__ == "__main__":
