@@ -179,8 +179,9 @@ def frontier(repo: str, current_summary) -> list[tuple[str, dict]]:
     if not eligible:
         if blocked_count == len(open_tasks):
             fail("BLOCKED_FRONTIER", "all open execution tasks are blocked")
-        if claimed_count == len(open_tasks):
-            fail("FRONTIER_FULLY_CLAIMED", "all otherwise eligible execution tasks are claimed")
+        unblocked_count = len(open_tasks) - blocked_count
+        if unblocked_count > 0 and claimed_count == unblocked_count:
+            fail("FRONTIER_FULLY_CLAIMED", "all unblocked execution tasks are claimed")
         fail("NO_FRONTIER", "all open execution tasks are blocked or claimed")
 
     eligible.sort(key=lambda item: (PRIORITY_RANK[item[0]], item[1]["number"]))
