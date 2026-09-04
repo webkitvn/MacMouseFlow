@@ -97,10 +97,14 @@ def parse_yaml(text):
 
     def value(raw, index, parent_indent, number):
         if raw == ">-":
+            if index >= len(lines) or lines[index][0] <= parent_indent:
+                raise ValueError(f"line {number}: empty folded scalar")
+            content_indent = lines[index][0]
             parts = []
             while index < len(lines) and lines[index][0] > parent_indent:
+                if lines[index][0] != content_indent:
+                    raise ValueError(f"line {lines[index][2]}: folded scalar indentation is unsupported")
                 parts.append(lines[index][1]); index += 1
-            if not parts: raise ValueError(f"line {number}: empty folded scalar")
             return " ".join(parts), index
         if raw: return scalar(raw), index
         if index >= len(lines) or lines[index][0] <= parent_indent:

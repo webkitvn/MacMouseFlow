@@ -83,6 +83,10 @@ class GuardrailRegistryTests(unittest.TestCase):
         self.assert_invalid_fixture("schema_version: 1", "schema_version: 1 # comment")
         self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.\n\n      This blank folded line is unsupported.")
         self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.\n      # folded content is unsupported")
+        self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      first\n        second\n      third")
+
+    def test_uniform_folded_blocks_parse(self):
+        self.assertEqual(self.data()["guardrails"][0]["invariant_summary"], "Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.")
 
     def test_hard_prohibition_cannot_use_bounded_waiver(self):
         self.assert_invalid_fixture("      policy: forbidden\n      records: []", "      policy: decision_backed_bounded\n      records: []")
