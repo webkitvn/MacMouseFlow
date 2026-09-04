@@ -28,7 +28,7 @@ def scalar(value):
     if value == "1": return 1
     if value == "null": return None
     if value == "[]": return []
-    if (re.match(r"^(?:[-?:]\s|[\[\]{} ,#&*!|>'\"%@`])", value) or ": " in value or value in {"~", "Null", "NULL", "true", "false", "True", "False", "TRUE", "FALSE"} or re.fullmatch(r"[-+]?(?:0o[0-7_]+|0x[0-9a-fA-F_]+|(?:[0-9][0-9_]*\.[0-9_]*|\.[0-9_]+|[0-9][0-9_]*)(?:[eE][-+]?[0-9_]+)?)", value) or value.lower() in {".inf", "-.inf", "+.inf", ".nan"}):
+    if (re.match(r"^(?:[-?:](?:\s|$)|[\[\]{} ,#&*!|>'\"%@`])", value) or value.endswith(":") or ": " in value or value in {"~", "Null", "NULL", "true", "false", "True", "False", "TRUE", "FALSE"} or re.fullmatch(r"[-+]?(?:0o[0-7_]+|0x[0-9a-fA-F_]+|(?:[0-9][0-9_]*\.[0-9_]*|\.[0-9_]+|[0-9][0-9_]*)(?:[eE][-+]?[0-9_]+)?)", value) or value.lower() in {".inf", "-.inf", "+.inf", ".nan"}):
         raise ValueError(f"unsupported YAML scalar {value!r}")
     if value[:1] in {"'", '"'}:
         raise ValueError("quoted scalars are unsupported")

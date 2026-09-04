@@ -96,7 +96,11 @@ class GuardrailRegistryTests(unittest.TestCase):
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: ? structural")
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: : structural")
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: foo: bar")
+        self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: foo:")
+        self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: :")
+        self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: ?")
         self.assert_invalid_fixture("      - domain_semantics", "      - - hot_path")
+        self.assert_invalid_fixture("      - domain_semantics", "      - -")
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", 'title: "a\\nb"')
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: 'it''s'")
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", 'title: "ordinary"')
@@ -109,6 +113,8 @@ class GuardrailRegistryTests(unittest.TestCase):
         self.assertEqual(guardrail_registry.scalar("D1"), "D1")
         self.assertEqual(guardrail_registry.scalar("issue-61"), "issue-61")
         self.assertEqual(guardrail_registry.scalar("123abc"), "123abc")
+        self.assertEqual(guardrail_registry.scalar("question? yes"), "question? yes")
+        self.assertEqual(guardrail_registry.scalar("colon:value"), "colon:value")
 
     def test_textual_schema_fields_reject_non_strings(self):
         data = self.data()
