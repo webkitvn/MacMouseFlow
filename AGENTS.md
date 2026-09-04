@@ -51,7 +51,7 @@ gh api repos/OWNER/REPO/contents/CONTEXT.md \
 
 Native GitHub milestone, hierarchy, dependency, label, assignee, and state metadata are canonical whenever the active tracker/dev environment exposes the required operations. A Markdown/body relationship graph is compatibility-only when native mutation is unavailable. If a current context declares such a fallback, surface that degraded tracker mode explicitly; do not silently compute a supposedly canonical frontier from an incomplete native graph.
 
-Follow Issue pointers to ADRs, research, and guardrails only when needed.
+Follow Issue pointers to ADRs, research, and guardrails only when needed. For guardrail-relevant work, start at `docs/guardrails/registry.yaml`, load active records matching the scope or triggers, then follow their canonical source pointers.
 
 A zero-context agent must be able to answer from tracker/repository state alone: what is current, what work is available, what is blocked, what should be taken first, how to claim it, what canonical decisions constrain it, and how completion is proved.
 
@@ -63,7 +63,7 @@ A zero-context agent must be able to answer from tracker/repository state alone:
 - Use domain terms from `CONTEXT.md`; do not invent competing vocabulary.
 - Do not introduce new process boundaries, helpers, IPC, HID takeover, or other hard-to-reverse architecture changes without a decision Issue and ADR.
 - Update the active Issue when a material fact or decision changes what later agents need to know.
-- External products and codebases are research inputs, not implementation or test oracles. Preserve the routing: reference observation → independent validation/project decision → established public seam → test/implementation.
+- External products and codebases are research inputs, not implementation or test oracles. Preserve the routing: reference observation → independent validation/project decision → established public seam → test/implementation. `/Users/cuongpham/Projects/repo-x` is an optional local research input only: if absent, continue without hunting for it; never use it as an implementation/test oracle or copy/mechanically transform its expression.
 - Do not copy or mechanically transform external code, comments, documentation prose, tests, distinctive naming, module structure, control flow, or product expression.
 - A reference-derived observation must not directly become an expected test value or architecture choice. If the expected behavior cannot be justified without the reference, research or decide first.
 

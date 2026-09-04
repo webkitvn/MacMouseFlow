@@ -1,0 +1,452 @@
+schema_version: 1
+guardrails:
+  - id: DG-DOM-001
+    title: Preserve Input Source Semantics
+    family: domain_semantic_integrity
+    semantic_form: hard_prohibition
+    status: active
+    scope:
+      kind: domain_context
+      area: pointer_input_source_semantics
+    canonical_sources:
+      - kind: context
+        ref: CONTEXT.md
+      - kind: adr
+        ref: docs/adr/0001-native-adapter-rust-engine-boundary.md
+    invariant_summary: >-
+      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.
+    violation_patterns:
+      - name: granularity_identity_inference
+        summary: >-
+          Infer a mouse, trackpad, or same device from granularity, timing, missing identity, or undocumented correlation.
+    triggers:
+      - domain_semantics
+      - source_inference
+      - device_classification
+    detector:
+      evidence_classes:
+        - D2
+        - D4
+        - D5
+    enforcement:
+      allowed_actions:
+        - fail
+        - warn
+        - request_changes
+        - stop_and_decide
+      canonical_surfaces:
+        - just_test
+        - semantic_review
+        - decision_escalation
+    required_next_action: >-
+      Preserve Unknown or semantic uncertainty, or obtain a canonical decision before implementing identity capability.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: forbidden
+      records: []
+  - id: DG-ARCH-001
+    title: Preserve Native/Rust Architecture Boundary
+    family: architecture_boundary_integrity
+    semantic_form: hard_prohibition
+    status: active
+    scope:
+      kind: architecture_boundary
+      area: native_rust_hot_path_abi
+    canonical_sources:
+      - kind: adr
+        ref: docs/adr/0001-native-adapter-rust-engine-boundary.md
+      - kind: repository_contract
+        ref: AGENTS.md
+    invariant_summary: >-
+      One process, native platform ownership, platform-neutral Rust ownership, and narrow fixed-layout C ABI remain explicit boundaries.
+    violation_patterns:
+      - name: implicit_topology_or_ownership_drift
+        summary: >-
+          Add helper, XPC, IPC, HID takeover, virtual device, cross-boundary heap ownership, or shift owned responsibilities without a decision.
+    triggers:
+      - architecture_boundary
+      - new_abstraction
+      - process_topology
+      - ffi_abi
+      - platform_ownership
+    detector:
+      evidence_classes:
+        - D1
+        - D4
+        - D5
+    enforcement:
+      allowed_actions:
+        - fail
+        - warn
+        - request_changes
+        - stop_and_decide
+      canonical_surfaces:
+        - just_check
+        - semantic_review
+        - decision_escalation
+    required_next_action: >-
+      Revert to the current boundary or open a superseding decision and ADR before continuing.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: forbidden
+      records: []
+  - id: DG-RT-001
+    title: Keep the Input Callback Bounded and Non-Blocking
+    family: real_time_reliability_safety
+    semantic_form: hard_prohibition
+    status: active
+    scope:
+      kind: architecture_boundary
+      area: input_callback_and_diagnostics_producer
+    canonical_sources:
+      - kind: adr
+        ref: docs/adr/0001-native-adapter-rust-engine-boundary.md
+      - kind: adr
+        ref: docs/adr/0003-bounded-structured-observability-pipeline.md
+      - kind: repository_contract
+        ref: AGENTS.md
+    invariant_summary: >-
+      The input callback permits bounded extraction, FFI, application, and non-blocking diagnostic enqueue only; dropped traces never block input.
+    violation_patterns:
+      - name: blocking_callback_work
+        summary: >-
+          Perform UI, MainActor, disk, network, synchronous logging, config parsing, unbounded locking, allocation, waiting, or direct JSON serialization in the callback.
+    triggers:
+      - hot_path
+      - callback
+      - logging
+      - locking
+      - allocation
+      - io
+      - diagnostics
+    detector:
+      evidence_classes:
+        - D1
+        - D3
+        - D4
+        - D5
+    enforcement:
+      allowed_actions:
+        - fail
+        - request_changes
+        - stop_and_decide
+      canonical_surfaces:
+        - just_check
+        - just_benchmark
+        - semantic_review
+        - decision_escalation
+    required_next_action: >-
+      Move work outside the callback or use a bounded non-blocking path; supersede the decision to change the invariant.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: forbidden
+      records: []
+  - id: DG-REL-001
+    title: Preserve Original Input on Bridge/Engine Failure
+    family: real_time_reliability_safety
+    semantic_form: hard_prohibition
+    status: active
+    scope:
+      kind: architecture_boundary
+      area: native_rust_failure_path
+    canonical_sources:
+      - kind: adr
+        ref: docs/adr/0001-native-adapter-rust-engine-boundary.md
+      - kind: repository_contract
+        ref: AGENTS.md
+    invariant_summary: >-
+      Bridge or engine failures fail open and preserve original input instead of suppressing or corrupting it.
+    violation_patterns:
+      - name: failure_suppresses_input
+        summary: >-
+          Map panic, error, exception, or invalid decision to suppression or a fabricated transformed event.
+    triggers:
+      - bridge_failure
+      - engine_failure
+      - error_mapping
+      - input_decision
+      - live_input_path
+    detector:
+      evidence_classes:
+        - D2
+        - D3
+        - D4
+    enforcement:
+      allowed_actions:
+        - fail
+        - request_changes
+      canonical_surfaces:
+        - just_test
+        - just_smoke
+        - semantic_review
+    required_next_action: >-
+      Restore fail-open behavior and demonstrate it at an established public seam.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: forbidden
+      records: []
+  - id: DG-VER-001
+    title: Seam-Gated TDD
+    family: verification_test_evidence_integrity
+    semantic_form: conditional_prohibition
+    status: active
+    scope:
+      kind: workflow_surface
+      area: production_tests_and_test_supporting_abstractions
+    canonical_sources:
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/56
+      - kind: adr
+        ref: docs/adr/0002-hot-path-test-seams-and-latency-budget.md
+      - kind: repository_contract
+        ref: AGENTS.md
+    invariant_summary: >-
+      Production tests verify behavior through established public seams and do not invent boundary semantics only for testability.
+    violation_patterns:
+      - name: speculative_test_seam
+        summary: >-
+          Add a test-only interface, adapter, provider, gateway, repository, mock, fake, or private-detail contract before the boundary is canonical.
+    triggers:
+      - tests
+      - mock_fake
+      - new_test_seam
+      - dependency_injection
+      - new_interface_abstraction
+    detector:
+      evidence_classes:
+        - D4
+        - D5
+    enforcement:
+      allowed_actions:
+        - notice
+        - warn
+        - request_changes
+        - stop_and_decide
+      canonical_surfaces:
+        - semantic_review
+        - decision_escalation
+    required_next_action: >-
+      Find established-seam evidence or stop production TDD for research, prototype, or a canonical decision.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: forbidden
+      records: []
+  - id: DG-VER-002
+    title: Require Correct Latency Evidence
+    family: verification_test_evidence_integrity
+    semantic_form: evidence_required_invariant
+    status: active
+    scope:
+      kind: workflow_surface
+      area: hot_path_latency_acceptance_and_release_evidence
+    canonical_sources:
+      - kind: adr
+        ref: docs/adr/0002-hot-path-test-seams-and-latency-budget.md
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/58
+    invariant_summary: >-
+      Strict hot-path latency claims require reference-Mac evidence; hosted CI timing is not acceptance or release evidence.
+    violation_patterns:
+      - name: hosted_timing_as_absolute_gate
+        summary: >-
+          Treat hosted runner timing as strict latency evidence, claim a pass without the benchmark, or silently weaken a budget.
+    triggers:
+      - performance_claim
+      - latency_budget
+      - benchmark
+      - release_evidence
+      - hot_path
+    detector:
+      evidence_classes:
+        - D3
+        - D5
+    enforcement:
+      allowed_actions:
+        - fail
+        - stop_and_decide
+      canonical_surfaces:
+        - just_benchmark
+        - just_smoke
+        - decision_escalation
+    required_next_action: >-
+      Run the relevant canonical benchmark or smoke command in the required environment, or open a decision to change the contract.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: decision_backed_bounded
+      records: []
+  - id: DG-SOT-001
+    title: Preserve Canonical Project Truth Routing
+    family: agent_source_of_truth_planning_integrity
+    semantic_form: hard_prohibition
+    status: active
+    scope:
+      kind: workflow_surface
+      area: agent_cold_start_planning_state_and_verification_routing
+    canonical_sources:
+      - kind: repository_contract
+        ref: AGENTS.md
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/57
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/60
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/58
+    invariant_summary: >-
+      Decisions, state, relationships, and verification behavior route to canonical owners rather than chat or competing derived authority.
+    violation_patterns:
+      - name: competing_project_truth
+        summary: >-
+          Use chat as project truth, duplicate native tracker relationships, add just guardrails, or put transient state in AGENTS.md.
+    triggers:
+      - cold_start
+      - planning_mutation
+      - tracker_relationship
+      - agents_md
+      - verification_wiring
+      - canonical_source_change
+    detector:
+      evidence_classes:
+        - D1
+        - D4
+        - D5
+    enforcement:
+      allowed_actions:
+        - fail
+        - warn
+        - request_changes
+        - stop_and_decide
+      canonical_surfaces:
+        - just_check
+        - semantic_review
+        - decision_escalation
+    required_next_action: >-
+      Route the information to its canonical owner, remove competing authority, and reconcile drift before acceptance.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: forbidden
+      records: []
+  - id: DG-PROV-001
+    title: Prohibit Source-Derived Expression from Repo X
+    family: external_reference_provenance_integrity
+    semantic_form: hard_prohibition
+    status: active
+    scope:
+      kind: repo_wide
+      area: repo_x_source_inspection_and_influenced_artifacts
+    canonical_sources:
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/21
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/60
+      - kind: repository_contract
+        ref: AGENTS.md
+    invariant_summary: >-
+      Repo X is a research input, never an implementation template; source-derived expression is prohibited in project artifacts.
+    violation_patterns:
+      - name: source_derived_expression
+        summary: >-
+          Copy, translate, paraphrase, or mechanically transform distinctive source naming, structure, flow, tests, docs, comments, UI copy, constants, or private mappings.
+    triggers:
+      - external_reference
+      - repo_x
+      - source_inspection
+      - implementation_influenced_by_reference
+      - public_artifact_provenance
+    detector:
+      evidence_classes:
+        - D4
+        - D5
+    enforcement:
+      allowed_actions:
+        - warn
+        - request_changes
+        - stop_and_decide
+      canonical_surfaces:
+        - semantic_review
+        - decision_escalation
+    required_next_action: >-
+      Remove and independently derive the expression, or open an explicit reuse and provenance decision.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: forbidden
+      records: []
+  - id: DG-PROV-002
+    title: Require Independent Project Rationale for Repo X Influence
+    family: external_reference_provenance_integrity
+    semantic_form: evidence_required_invariant
+    status: active
+    scope:
+      kind: workflow_surface
+      area: research_design_implementation_provenance
+    canonical_sources:
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/21
+      - kind: issue_resolution
+        ref: https://github.com/webkitvn/MacMouseFlow/issues/60
+    invariant_summary: >-
+      Repo X observations are not project decisions; influenced choices must have rationale independent of Repo X.
+    violation_patterns:
+      - name: reference_as_project_authority
+        summary: >-
+          Treat a Repo X observation as best practice or a decision without independent project evidence and cold-start rationale.
+    triggers:
+      - external_reference
+      - repo_x_observation
+      - reference_pattern
+      - best_practice_claim
+      - reference_influenced_design
+    detector:
+      evidence_classes:
+        - D4
+        - D5
+    enforcement:
+      allowed_actions:
+        - notice
+        - warn
+        - request_changes
+        - stop_and_decide
+      canonical_surfaces:
+        - semantic_review
+        - decision_escalation
+    required_next_action: >-
+      Record independent project rationale and evidence, or keep the observation as a candidate rather than a decision.
+    lifecycle:
+      last_transition:
+        to: active
+        decision: https://github.com/webkitvn/MacMouseFlow/issues/61
+      superseded_by: null
+    waiver:
+      policy: forbidden
+      records: []
