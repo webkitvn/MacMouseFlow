@@ -20,6 +20,7 @@ EVIDENCE_CLASSES = {"D1", "D2", "D3", "D4", "D5"}
 ACTIONS = {"notice", "warn", "request_changes", "fail", "stop_and_decide"}
 SURFACES = {"just_check", "just_test", "just_ci", "just_benchmark", "just_smoke", "semantic_review", "decision_escalation"}
 WAIVER_POLICIES = {"forbidden", "decision_backed_bounded"}
+INITIAL_IDS = {"DG-DOM-001", "DG-ARCH-001", "DG-RT-001", "DG-REL-001", "DG-VER-001", "DG-VER-002", "DG-SOT-001", "DG-PROV-001", "DG-PROV-002"}
 
 
 def scalar(value):
@@ -36,11 +37,31 @@ def scalar(value):
 
 def parse_yaml(text):
     """Parse only mappings, lists, plain scalars, `[]`, `null`, and folded `>-` text."""
+    raw_lines = text.splitlines()
+    for index, raw in enumerate(raw_lines):
+        if raw.strip() == "":
+            following = next((line for line in raw_lines[index + 1:] if line.strip()), "")
+            following_indent = len(following) - len(following.lstrip())
+            for previous in reversed(raw_lines[:index]):
+                if not previous.strip(): continue
+                previous_indent = len(previous) - len(previous.lstrip())
+                if previous_indent < following_indent:
+                    if previous.strip().endswith(">-"):
+                        raise ValueError(f"line {index + 1}: blank folded-block lines are unsupported")
+                    break
+        elif raw.lstrip().startswith("#"):
+            indent = len(raw) - len(raw.lstrip())
+            for previous in reversed(raw_lines[:index]):
+                if not previous.strip(): continue
+                if len(previous) - len(previous.lstrip()) < indent:
+                    if previous.strip().endswith(">-"):
+                        raise ValueError(f"line {index + 1}: comment-looking folded-block content is unsupported")
+                    break
     lines = []
-    for number, raw in enumerate(text.splitlines(), 1):
+    for number, raw in enumerate(raw_lines, 1):
         if not raw.strip() or raw.lstrip().startswith("#"): continue
-        if "\t" in raw or raw.rstrip() != raw:
-            raise ValueError(f"line {number}: tabs or trailing whitespace are unsupported")
+        if "\t" in raw or raw.rstrip() != raw or "#" in raw:
+            raise ValueError(f"line {number}: tabs, trailing whitespace, and inline comments are unsupported")
         lines.append((len(raw) - len(raw.lstrip()), raw.strip(), number))
 
     def block(index, indent):
@@ -127,7 +148,7 @@ def validate(data, root=ROOT):
     exact(data, {"schema_version", "guardrails"}, "registry")
     if data["schema_version"] != "1": raise ValueError("registry.schema_version: must be 1")
     registry = required(data["guardrails"], "registry.guardrails")
-    if not isinstance(registry, list) or len(registry) != 9: raise ValueError("registry.guardrails: must contain exactly 9 records")
+    if not isinstance(registry, list): raise ValueError("registry.guardrails: must be a list")
     identifiers = set()
     superseded_by = []
     for record in registry:
@@ -175,9 +196,15 @@ def validate(data, root=ROOT):
             if not isinstance(evidence, list): raise ValueError(f"{identifier}.waiver.record.evidence: must be list")
             for evidence_pointer in evidence: pointer(evidence_pointer, root, f"{identifier}.waiver.record.evidence")
             exact(item["expires"], {"kind", "value"}, f"{identifier}.waiver.record.expires"); choice(item["expires"]["kind"], {"date", "condition"}, f"{identifier}.waiver.record.expires.kind"); required(item["expires"]["value"], f"{identifier}.waiver.record.expires.value")
+    missing_initial = INITIAL_IDS - identifiers
+    if missing_initial: raise ValueError(f"registry.guardrails: missing initial IDs {sorted(missing_initial)}")
     for identifier, successor in superseded_by:
         if successor not in identifiers: raise ValueError(f"{identifier}.lifecycle.superseded_by: unknown guardrail ID {successor}")
     return data
+
+
+def check_readme(actual, expected):
+    if actual != expected: raise ValueError("generated README drift; run scripts/guardrail_registry.py")
 
 
 def render(data):
@@ -189,11 +216,11 @@ def render(data):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(); parser.add_argument("--registry", type=pathlib.Path, default=REGISTRY); parser.add_argument("--check", action="store_true"); args = parser.parse_args(argv)
+    parser = argparse.ArgumentParser(); parser.add_argument("--check", action="store_true"); args = parser.parse_args(argv)
     try:
-        data = validate(parse_yaml(args.registry.read_text()), args.registry.parents[2]); expected = render(data)
+        data = validate(parse_yaml(REGISTRY.read_text()), ROOT); expected = render(data)
         if args.check:
-            if README.read_text() != expected: raise ValueError("generated README drift; run scripts/guardrail_registry.py")
+            check_readme(README.read_text(), expected)
         else: README.write_text(expected)
     except (OSError, ValueError) as error:
         print(f"GUARDRAIL_REGISTRY_INVALID: {error}", file=sys.stderr); return 1

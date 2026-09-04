@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import copy
 import pathlib
 import unittest
 
@@ -33,14 +34,30 @@ class GuardrailRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             guardrail_registry.validate(self.data(self.registry_text().replace(old, new, 1)), ROOT)
 
+    def test_initial_ids_are_required_but_successors_and_tombstones_are_allowed(self):
+        data = self.data()
+        original = data["guardrails"][0]
+        original["status"] = "superseded"
+        original["lifecycle"]["last_transition"]["to"] = "superseded"
+        original["lifecycle"]["superseded_by"] = "DG-DOM-010"
+        successor = copy.deepcopy(original)
+        successor["id"] = "DG-DOM-010"
+        successor["status"] = "active"
+        successor["lifecycle"]["last_transition"]["to"] = "active"
+        successor["lifecycle"]["superseded_by"] = None
+        data["guardrails"].append(successor)
+        guardrail_registry.validate(data, ROOT)
+        data["guardrails"] = data["guardrails"][1:]
+        with self.assertRaises(ValueError):
+            guardrail_registry.validate(data, ROOT)
+
     def test_canonical_registry_has_exact_frozen_metadata(self):
         data = guardrail_registry.validate(self.data(), ROOT)
         actual = {
             record["id"]: (record["family"], record["semantic_form"], record["scope"]["kind"], record["scope"]["area"], tuple(record["triggers"]), tuple(record["detector"]["evidence_classes"]), record["waiver"]["policy"])
             for record in data["guardrails"]
         }
-        self.assertEqual(actual, FROZEN)
-        self.assertEqual({record["status"] for record in data["guardrails"]}, {"active"})
+        self.assertEqual({identifier: actual[identifier] for identifier in FROZEN}, FROZEN)
         for record in data["guardrails"]:
             self.assertTrue(record["canonical_sources"])
             self.assertTrue(record["enforcement"]["allowed_actions"])
@@ -63,6 +80,9 @@ class GuardrailRegistryTests(unittest.TestCase):
     def test_rejects_duplicate_yaml_keys_and_ambiguous_yaml(self):
         self.assert_invalid_fixture("    title: Preserve Input Source Semantics", "    title: Preserve Input Source Semantics\n    title: duplicate")
         self.assert_invalid_fixture("schema_version: 1", "schema_version: &version 1")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: 1 # comment")
+        self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.\n\n      This blank folded line is unsupported.")
+        self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.\n      # folded content is unsupported")
 
     def test_hard_prohibition_cannot_use_bounded_waiver(self):
         self.assert_invalid_fixture("      policy: forbidden\n      records: []", "      policy: decision_backed_bounded\n      records: []")
@@ -118,11 +138,17 @@ class GuardrailRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             guardrail_registry.validate(self.data(text), ROOT)
 
-    def test_generated_readme_drift_is_pure_comparison(self):
+    def test_generated_readme_drift_uses_checker_logic_without_mutation(self):
         data = guardrail_registry.validate(self.data(), ROOT)
         expected = guardrail_registry.render(data)
-        self.assertEqual(README.read_text(), expected)
-        self.assertNotEqual(README.read_text() + "drift\n", expected)
+        check = README.read_text()
+        guardrail_registry.check_readme(check, expected)
+        with self.assertRaises(ValueError):
+            guardrail_registry.check_readme(check + "drift\n", expected)
+
+    def test_cli_has_no_alternate_registry_path(self):
+        with self.assertRaises(SystemExit):
+            guardrail_registry.main(["--registry", "fixture.yaml"])
 
     def test_cold_start_routes_agents_to_active_scoped_canonical_source(self):
         data = guardrail_registry.validate(self.data(), ROOT)
