@@ -25,9 +25,10 @@ INITIAL_IDS = {"DG-DOM-001", "DG-ARCH-001", "DG-RT-001", "DG-REL-001", "DG-VER-0
 
 def scalar(value):
     value = value.strip()
+    if value == "1": return 1
     if value == "null": return None
     if value == "[]": return []
-    if value.startswith(("&", "*", "!", "|", ">")) or value in {"{}", "true", "false"}:
+    if (value.startswith(("&", "*", "!", "|", ">", "[", "{")) or value in {"~", "Null", "NULL", "true", "false", "True", "False", "TRUE", "FALSE"} or re.fullmatch(r"[-+]?(?:0o[0-7_]+|0x[0-9a-fA-F_]+|(?:[0-9][0-9_]*\.[0-9_]*|\.[0-9_]+|[0-9][0-9_]*)(?:[eE][-+]?[0-9_]+)?)", value) or value.lower() in {".inf", "-.inf", "+.inf", ".nan"}):
         raise ValueError(f"unsupported YAML scalar {value!r}")
     if value[:1] in {"'", '"'}:
         raise ValueError("quoted scalars are unsupported")
@@ -149,7 +150,7 @@ def pointer(ref, root, where):
 
 def validate(data, root=ROOT):
     exact(data, {"schema_version", "guardrails"}, "registry")
-    if data["schema_version"] != "1": raise ValueError("registry.schema_version: must be 1")
+    if type(data["schema_version"]) is not int or data["schema_version"] != 1: raise ValueError("registry.schema_version: must be 1")
     registry = required(data["guardrails"], "registry.guardrails")
     if not isinstance(registry, list): raise ValueError("registry.guardrails: must be a list")
     identifiers = set()

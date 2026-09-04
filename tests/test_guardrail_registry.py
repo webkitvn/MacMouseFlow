@@ -81,6 +81,17 @@ class GuardrailRegistryTests(unittest.TestCase):
         self.assert_invalid_fixture("    title: Preserve Input Source Semantics", "    title: Preserve Input Source Semantics\n    title: duplicate")
         self.assert_invalid_fixture("schema_version: 1", "schema_version: &version 1")
         self.assert_invalid_fixture("schema_version: 1", "schema_version: 1 # comment")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: [a, b]")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: {a: b}")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: true")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: ~")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: 1.0")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: 1.")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: -1.")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: 0xFF")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: -0xFF")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: 0o77")
+        self.assert_invalid_fixture("schema_version: 1", "schema_version: +0o77")
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", 'title: "a\\nb"')
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: 'it''s'")
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", 'title: "ordinary"')
@@ -88,8 +99,14 @@ class GuardrailRegistryTests(unittest.TestCase):
         self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.\n      # folded content is unsupported")
         self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      first\n        second\n      third")
 
-    def test_uniform_folded_blocks_parse(self):
-        self.assertEqual(self.data()["guardrails"][0]["invariant_summary"], "Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.")
+    def test_uniform_folded_blocks_parse_and_schema_version_is_integer(self):
+        data = self.data()
+        self.assertEqual(data["schema_version"], 1)
+        data["schema_version"] = True
+        with self.assertRaises(ValueError):
+            guardrail_registry.validate(data, ROOT)
+        data["schema_version"] = 1
+        self.assertEqual(data["guardrails"][0]["invariant_summary"], "Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.")
 
     def test_hard_prohibition_cannot_use_bounded_waiver(self):
         self.assert_invalid_fixture("      policy: forbidden\n      records: []", "      policy: decision_backed_bounded\n      records: []")
@@ -160,8 +177,17 @@ class GuardrailRegistryTests(unittest.TestCase):
     def test_cold_start_routes_agents_to_active_scoped_canonical_source(self):
         data = guardrail_registry.validate(self.data(), ROOT)
         self.assertIn("docs/guardrails/registry.yaml", AGENTS.read_text())
-        record = next(item for item in data["guardrails"] if item["status"] == "active" and "hot_path" in item["triggers"])
-        self.assertIn("docs/adr/0001-native-adapter-rust-engine-boundary.md", [source["ref"] for source in record["canonical_sources"]])
+        matches = [
+            item for item in data["guardrails"]
+            if item["status"] == "active"
+            and item["scope"]["kind"] == "architecture_boundary"
+            and item["scope"]["area"] == "input_callback_and_diagnostics_producer"
+            and "hot_path" in item["triggers"]
+        ]
+        self.assertEqual(len(matches), 1)
+        sources = [source["ref"] for source in matches[0]["canonical_sources"]]
+        self.assertIn("docs/adr/0001-native-adapter-rust-engine-boundary.md", sources)
+        self.assertTrue((ROOT / "docs/adr/0001-native-adapter-rust-engine-boundary.md").is_file())
 
 
 if __name__ == "__main__": unittest.main()
