@@ -30,8 +30,7 @@ def scalar(value):
     if value.startswith(("&", "*", "!", "|", ">")) or value in {"{}", "true", "false"}:
         raise ValueError(f"unsupported YAML scalar {value!r}")
     if value[:1] in {"'", '"'}:
-        if len(value) < 2 or value[-1] != value[0]: raise ValueError("unterminated quoted scalar")
-        return value[1:-1]
+        raise ValueError("quoted scalars are unsupported")
     return value
 
 
