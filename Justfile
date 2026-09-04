@@ -14,7 +14,8 @@ build:
 
 check:
     python3 scripts/verify_toolchain.py
-    python3 -m py_compile scripts/next_work.py scripts/verify_toolchain.py tests/test_next_work.py tests/test_repository_contract.py
+    python3 scripts/guardrail_registry.py --check
+    python3 -m py_compile scripts/next_work.py scripts/verify_toolchain.py scripts/guardrail_registry.py tests/test_next_work.py tests/test_repository_contract.py tests/test_guardrail_registry.py
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
