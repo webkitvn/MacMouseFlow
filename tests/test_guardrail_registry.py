@@ -92,12 +92,49 @@ class GuardrailRegistryTests(unittest.TestCase):
         self.assert_invalid_fixture("schema_version: 1", "schema_version: -0xFF")
         self.assert_invalid_fixture("schema_version: 1", "schema_version: 0o77")
         self.assert_invalid_fixture("schema_version: 1", "schema_version: +0o77")
+        self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: - structural")
+        self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: ? structural")
+        self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: : structural")
+        self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: foo: bar")
+        self.assert_invalid_fixture("      - domain_semantics", "      - - hot_path")
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", 'title: "a\\nb"')
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", "title: 'it''s'")
         self.assert_invalid_fixture("title: Preserve Input Source Semantics", 'title: "ordinary"')
         self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.\n\n      This blank folded line is unsupported.")
         self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.\n      # folded content is unsupported")
         self.assert_invalid_fixture("      Scroll Granularity, timestamps, and undocumented correlation do not prove Source Class or physical Device Identity.", "      first\n        second\n      third")
+
+    def test_textual_urls_and_domain_strings_remain_plain_scalars(self):
+        self.assertEqual(guardrail_registry.scalar("https://github.com/example/repo"), "https://github.com/example/repo")
+        self.assertEqual(guardrail_registry.scalar("D1"), "D1")
+        self.assertEqual(guardrail_registry.scalar("issue-61"), "issue-61")
+        self.assertEqual(guardrail_registry.scalar("123abc"), "123abc")
+
+    def test_textual_schema_fields_reject_non_strings(self):
+        data = self.data()
+        cases = [
+            ("title", 1),
+            ("scope.area", 1),
+            ("canonical_sources[0].ref", 1),
+            ("violation_patterns[0].summary", 1),
+            ("triggers[0]", 1),
+            ("detector.evidence_classes[0]", 1),
+            ("enforcement.allowed_actions[0]", 1),
+            ("lifecycle.last_transition.decision", 1),
+            ("waiver.policy", 1),
+        ]
+        for path, value in cases:
+            fixture = copy.deepcopy(data)
+            target = fixture["guardrails"][0]
+            for part in path.split(".")[:-1]:
+                name, _, index = part.partition("[")
+                target = target[name]
+                if index: target = target[int(index[:-1])]
+            name, _, index = path.split(".")[-1].partition("[")
+            if index: target[name][int(index[:-1])] = value
+            else: target[name] = value
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                guardrail_registry.validate(fixture, ROOT)
 
     def test_uniform_folded_blocks_parse_and_schema_version_is_integer(self):
         data = self.data()

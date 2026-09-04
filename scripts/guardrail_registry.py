@@ -28,7 +28,7 @@ def scalar(value):
     if value == "1": return 1
     if value == "null": return None
     if value == "[]": return []
-    if (value.startswith(("&", "*", "!", "|", ">", "[", "{")) or value in {"~", "Null", "NULL", "true", "false", "True", "False", "TRUE", "FALSE"} or re.fullmatch(r"[-+]?(?:0o[0-7_]+|0x[0-9a-fA-F_]+|(?:[0-9][0-9_]*\.[0-9_]*|\.[0-9_]+|[0-9][0-9_]*)(?:[eE][-+]?[0-9_]+)?)", value) or value.lower() in {".inf", "-.inf", "+.inf", ".nan"}):
+    if (re.match(r"^(?:[-?:]\s|[\[\]{} ,#&*!|>'\"%@`])", value) or ": " in value or value in {"~", "Null", "NULL", "true", "false", "True", "False", "TRUE", "FALSE"} or re.fullmatch(r"[-+]?(?:0o[0-7_]+|0x[0-9a-fA-F_]+|(?:[0-9][0-9_]*\.[0-9_]*|\.[0-9_]+|[0-9][0-9_]*)(?:[eE][-+]?[0-9_]+)?)", value) or value.lower() in {".inf", "-.inf", "+.inf", ".nan"}):
         raise ValueError(f"unsupported YAML scalar {value!r}")
     if value[:1] in {"'", '"'}:
         raise ValueError("quoted scalars are unsupported")
@@ -128,7 +128,13 @@ def required(value, where):
     return value
 
 
+def required_string(value, where):
+    if not isinstance(value, str) or not value: raise ValueError(f"{where}: required string")
+    return value
+
+
 def choice(value, values, where):
+    required_string(value, where)
     if value not in values: raise ValueError(f"{where}: invalid {value!r}")
 
 
@@ -157,19 +163,20 @@ def validate(data, root=ROOT):
     superseded_by = []
     for record in registry:
         exact(record, {"id", "title", "family", "semantic_form", "status", "scope", "canonical_sources", "invariant_summary", "violation_patterns", "triggers", "detector", "enforcement", "required_next_action", "lifecycle", "waiver"}, "guardrail")
-        identifier = required(record["id"], "guardrail.id")
+        identifier = required_string(record["id"], "guardrail.id")
         if not isinstance(identifier, str) or not re.fullmatch(r"DG-[A-Z]+-\d{3}", identifier) or identifier in identifiers: raise ValueError("guardrail.id: must be unique stable ID")
         identifiers.add(identifier)
-        required(record["title"], f"{identifier}.title"); required(record["invariant_summary"], f"{identifier}.invariant_summary"); required(record["required_next_action"], f"{identifier}.required_next_action")
+        required_string(record["title"], f"{identifier}.title"); required_string(record["invariant_summary"], f"{identifier}.invariant_summary"); required_string(record["required_next_action"], f"{identifier}.required_next_action")
         choice(record["family"], FAMILIES, f"{identifier}.family"); choice(record["semantic_form"], SEMANTIC_FORMS, f"{identifier}.semantic_form"); choice(record["status"], STATUSES, f"{identifier}.status")
-        exact(record["scope"], {"kind", "area"}, f"{identifier}.scope"); choice(required(record["scope"]["kind"], f"{identifier}.scope.kind"), SCOPE_KINDS, f"{identifier}.scope.kind"); required(record["scope"]["area"], f"{identifier}.scope.area")
+        exact(record["scope"], {"kind", "area"}, f"{identifier}.scope"); choice(record["scope"]["kind"], SCOPE_KINDS, f"{identifier}.scope.kind"); required_string(record["scope"]["area"], f"{identifier}.scope.area")
         sources = required(record["canonical_sources"], f"{identifier}.canonical_sources")
         if not isinstance(sources, list): raise ValueError(f"{identifier}.canonical_sources: must be list")
         for source in sources:
-            exact(source, {"kind", "ref"}, f"{identifier}.canonical_sources"); choice(required(source["kind"], "source.kind"), SOURCE_KINDS, "source.kind"); pointer(source["ref"], root, "source.ref")
+            exact(source, {"kind", "ref"}, f"{identifier}.canonical_sources"); choice(source["kind"], SOURCE_KINDS, "source.kind"); pointer(required_string(source["ref"], "source.ref"), root, "source.ref")
         patterns = required(record["violation_patterns"], f"{identifier}.violation_patterns"); triggers = required(record["triggers"], f"{identifier}.triggers")
-        if not isinstance(patterns, list) or not isinstance(triggers, list) or not all(isinstance(trigger, str) and trigger for trigger in triggers): raise ValueError(f"{identifier}: invalid patterns or triggers")
-        for pattern in patterns: exact(pattern, {"name", "summary"}, f"{identifier}.violation_pattern"); required(pattern["name"], "pattern.name"); required(pattern["summary"], "pattern.summary")
+        if not isinstance(patterns, list) or not isinstance(triggers, list): raise ValueError(f"{identifier}: invalid patterns or triggers")
+        for trigger in triggers: required_string(trigger, f"{identifier}.trigger")
+        for pattern in patterns: exact(pattern, {"name", "summary"}, f"{identifier}.violation_pattern"); required_string(pattern["name"], "pattern.name"); required_string(pattern["summary"], "pattern.summary")
         exact(record["detector"], {"evidence_classes"}, f"{identifier}.detector"); evidence = required(record["detector"]["evidence_classes"], f"{identifier}.detector.evidence_classes")
         if not isinstance(evidence, list): raise ValueError(f"{identifier}.detector.evidence_classes: must be list")
         for item in evidence: choice(item, EVIDENCE_CLASSES, f"{identifier}.detector.evidence_classes")
@@ -180,26 +187,27 @@ def validate(data, root=ROOT):
             for item in collection: choice(item, values, f"{identifier}.enforcement.{key}")
         lifecycle = record["lifecycle"]; exact(lifecycle, {"last_transition", "superseded_by"}, f"{identifier}.lifecycle")
         transition = lifecycle["last_transition"]; exact(transition, {"to", "decision"}, f"{identifier}.lifecycle.last_transition")
+        required_string(transition["to"], f"{identifier}.lifecycle.last_transition.to")
         if transition["to"] != record["status"]: raise ValueError(f"{identifier}.lifecycle.last_transition.to: must match status")
-        https_url(transition["decision"], f"{identifier}.lifecycle.last_transition.decision")
+        https_url(required_string(transition["decision"], f"{identifier}.lifecycle.last_transition.decision"), f"{identifier}.lifecycle.last_transition.decision")
         if record["status"] == "superseded":
-            successor = required(lifecycle["superseded_by"], f"{identifier}.lifecycle.superseded_by")
+            successor = required_string(lifecycle["superseded_by"], f"{identifier}.lifecycle.superseded_by")
             if not isinstance(successor, str) or not re.fullmatch(r"DG-[A-Z]+-\d{3}", successor) or successor == identifier:
                 raise ValueError(f"{identifier}.lifecycle.superseded_by: must be another stable guardrail ID")
             superseded_by.append((identifier, successor))
         elif lifecycle["superseded_by"] is not None: raise ValueError(f"{identifier}.lifecycle.superseded_by: must be null")
-        waiver = record["waiver"]; exact(waiver, {"policy", "records"}, f"{identifier}.waiver"); choice(required(waiver["policy"], f"{identifier}.waiver.policy"), WAIVER_POLICIES, f"{identifier}.waiver.policy")
+        waiver = record["waiver"]; exact(waiver, {"policy", "records"}, f"{identifier}.waiver"); choice(waiver["policy"], WAIVER_POLICIES, f"{identifier}.waiver.policy")
         if record["semantic_form"] == "hard_prohibition" and waiver["policy"] != "forbidden": raise ValueError(f"{identifier}.waiver: hard prohibitions are forbidden to waive")
         if not isinstance(waiver["records"], list): raise ValueError(f"{identifier}.waiver.records: must be list")
         if waiver["policy"] == "forbidden" and waiver["records"]: raise ValueError(f"{identifier}.waiver: forbidden policy cannot have records")
         for item in waiver["records"]:
             exact(item, {"id", "scope", "decision", "rationale", "evidence", "expires", "remediation"}, f"{identifier}.waiver.record")
-            for key in ("id", "scope", "rationale", "remediation"): required(item[key], f"{identifier}.waiver.record.{key}")
-            https_url(item["decision"], f"{identifier}.waiver.record.decision")
+            for key in ("id", "scope", "rationale", "remediation"): required_string(item[key], f"{identifier}.waiver.record.{key}")
+            https_url(required_string(item["decision"], f"{identifier}.waiver.record.decision"), f"{identifier}.waiver.record.decision")
             evidence = required(item["evidence"], f"{identifier}.waiver.record.evidence")
             if not isinstance(evidence, list): raise ValueError(f"{identifier}.waiver.record.evidence: must be list")
-            for evidence_pointer in evidence: pointer(evidence_pointer, root, f"{identifier}.waiver.record.evidence")
-            exact(item["expires"], {"kind", "value"}, f"{identifier}.waiver.record.expires"); choice(item["expires"]["kind"], {"date", "condition"}, f"{identifier}.waiver.record.expires.kind"); required(item["expires"]["value"], f"{identifier}.waiver.record.expires.value")
+            for evidence_pointer in evidence: pointer(required_string(evidence_pointer, f"{identifier}.waiver.record.evidence"), root, f"{identifier}.waiver.record.evidence")
+            exact(item["expires"], {"kind", "value"}, f"{identifier}.waiver.record.expires"); choice(item["expires"]["kind"], {"date", "condition"}, f"{identifier}.waiver.record.expires.kind"); required_string(item["expires"]["value"], f"{identifier}.waiver.record.expires.value")
     missing_initial = INITIAL_IDS - identifiers
     if missing_initial: raise ValueError(f"registry.guardrails: missing initial IDs {sorted(missing_initial)}")
     for identifier, successor in superseded_by:
