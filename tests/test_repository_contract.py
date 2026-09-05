@@ -36,7 +36,7 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn('channel = "1.98.0"', rust_toolchain)
         self.assertIn('"rustfmt"', rust_toolchain)
         self.assertIn('"clippy"', rust_toolchain)
-        self.assertEqual((ROOT / ".xcode-version").read_text().strip(), "16.4")
+        self.assertEqual((ROOT / ".xcode-version").read_text().strip(), "26.6")
 
         justfile = (ROOT / "Justfile").read_text()
         for recipe in [
@@ -73,7 +73,7 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertNotIn("actions/checkout@v4", workflow)
         self.assertIn("just ci", workflow)
         self.assertIn("ci-gate", workflow)
-        self.assertIn("macos-15", workflow)
+        self.assertIn("runs-on: macos-26", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertNotIn("cargo test", workflow)
         self.assertNotIn("cargo clippy", workflow)

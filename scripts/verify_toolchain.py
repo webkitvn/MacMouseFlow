@@ -7,7 +7,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUST_PIN = "1.98.0"
-XCODE_PIN = "16.4"
+XCODE_PIN = "26.6"
 
 
 def fail(message: str) -> None:
