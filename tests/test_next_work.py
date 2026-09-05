@@ -170,6 +170,84 @@ class NextWorkContractTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("FRONTIER_FULLY_CLAIMED", result.stderr)
 
+    def test_next_normalizes_native_relationship_connections(self):
+        responses = self.base_responses(self.current_epic())
+        responses.update(
+            {
+                "issue view 49 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": {
+                    "number": 49,
+                    "title": "M0",
+                    "body": "",
+                    "state": "OPEN",
+                    "labels": [{"name": "work:current"}, {"name": "execution:epic"}],
+                    "assignees": [],
+                    "blockedBy": {"nodes": [], "totalCount": 0},
+                    "subIssues": {"nodes": [{"number": 79}, {"number": 53}], "totalCount": 2},
+                    "url": "u49",
+                },
+                "issue view 79 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": {
+                    "number": 79,
+                    "title": "Available P0",
+                    "body": "",
+                    "state": "OPEN",
+                    "labels": [{"name": "execution:task"}, {"name": "priority:P0"}],
+                    "assignees": [],
+                    "blockedBy": {"nodes": [], "totalCount": 0},
+                    "subIssues": {"nodes": [], "totalCount": 0},
+                    "url": "u79",
+                },
+                "issue view 53 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": {
+                    "number": 53,
+                    "title": "Blocked P0",
+                    "body": "",
+                    "state": "OPEN",
+                    "labels": [{"name": "execution:task"}, {"name": "priority:P0"}],
+                    "assignees": [],
+                    "blockedBy": {"nodes": [{"number": 79, "state": "OPEN"}], "totalCount": 1},
+                    "subIssues": {"nodes": [], "totalCount": 0},
+                    "url": "u53",
+                },
+            }
+        )
+
+        result = self.run_command("next", responses)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("#79", result.stdout)
+        self.assertNotIn("#53", result.stdout)
+
+        responses[
+            "issue view 79 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url"
+        ]["state"] = "CLOSED"
+        responses[
+            "issue view 53 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url"
+        ]["blockedBy"]["nodes"][0]["state"] = "CLOSED"
+        result = self.run_command("next", responses)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("#53", result.stdout)
+
+    def test_next_rejects_native_relationship_connection_without_list_nodes(self):
+        responses = self.base_responses(self.current_epic())
+        responses[
+            "issue view 49 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url"
+        ] = {
+            "number": 49,
+            "title": "M0",
+            "body": "",
+            "state": "OPEN",
+            "labels": [{"name": "work:current"}, {"name": "execution:epic"}],
+            "assignees": [],
+            "blockedBy": {"nodes": [], "totalCount": 0},
+            "subIssues": {"totalCount": 1},
+            "url": "u49",
+        }
+
+        result = self.run_command("next", responses)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("INVALID_TRACKER_RESPONSE", result.stderr)
+
     def test_next_selects_lowest_number_from_highest_priority_unblocked_unclaimed_tasks(self):
         responses = self.base_responses(self.current_epic())
         responses.update(

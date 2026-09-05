@@ -100,6 +100,13 @@ def issue_view(repo: str, number: int):
     )
     if not isinstance(issue, dict):
         fail("INVALID_TRACKER_RESPONSE", f"issue #{number} did not return an object")
+    for field in ("blockedBy", "subIssues"):
+        relationship = issue.get(field)
+        if isinstance(relationship, dict):
+            nodes = relationship.get("nodes")
+            if not isinstance(nodes, list):
+                fail("INVALID_TRACKER_RESPONSE", f"issue #{number} {field} connection nodes must be a list")
+            issue[field] = nodes
     return issue
 
 
