@@ -113,3 +113,28 @@ Strict latency evidence comes from the reference Mac, not hosted CI timing. Hot-
 - Resolve at most one non-research Wayfinder ticket per planning session.
 
 Keep this file short and stable. Do not copy transient milestones, frontier state, dependency graphs, Issue numbers, or full decision bodies into it.
+
+## OpenSpec
+
+Product/configuration implementation Tasks use the repository OpenSpec workflow before modifying product code/configuration.
+
+- Bind artifacts to the claimed Issue, exact baseline SHA, dependencies, locked semantics, scope, acceptance criteria, STOP conditions, and minimal evidence.
+- OpenSpec artifacts support execution; they do not override the live Issue or newer applicable Issue decisions.
+- If OpenSpec exposes a new material product/architecture/data/ranking/security/privacy/tracking/UX decision, STOP and return to Issues/Wayfinder.
+- If tooling/format is unavailable, STOP unless the live Issue explicitly grants a bounded documentation/governance-only exception.
+
+1. **Propose — Skill: `openspec-explore` (optional) → `openspec-propose` (mandatory):**
+   Create `openspec/changes/<name>/` with `proposal.md`, `specs/`, `design.md`,
+   `tasks.md`. Start from the latest accepted baseline. Review artifacts before
+   implementing. Do NOT implement in this step.
+2. **Implement — Skill: `openspec-apply-change` (mandatory), `openspec-update-change` (if design shifts):**
+   Work through `tasks.md` items, marking `[x]`. Smallest change that satisfies
+   the slice. If design is wrong, update `design.md` and continue.
+3. **Verify — CLI: `openspec validate --all --no-interactive` (mandatory before archive):**
+   Check completeness, correctness, coherence. Map every acceptance criterion
+   to concrete evidence. Mandatory unavailable evidence is `NOT PROVEN`.
+   Address all CRITICAL issues before archiving.
+4. **Archive — Skill: `openspec-archive-change` (mandatory):**
+   Sync delta specs into `openspec/specs/`, move change to `changes/archive/`.
+   Close only after archived and all criteria pass. Promote direct dependents
+   whose blockers are all closed. Reopen if upstream acceptance is invalidated.
