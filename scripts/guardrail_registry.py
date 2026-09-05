@@ -172,7 +172,7 @@ def validate(data, root=ROOT):
         sources = required(record["canonical_sources"], f"{identifier}.canonical_sources")
         if not isinstance(sources, list): raise ValueError(f"{identifier}.canonical_sources: must be list")
         for source in sources:
-            exact(source, {"kind", "ref"}, f"{identifier}.canonical_sources"); choice(source["kind"], SOURCE_KINDS, "source.kind"); pointer(required_string(source["ref"], "source.ref"), root, "source.ref")
+            exact(source, {"kind", "ref"}, f"{identifier}.canonical_sources"); choice(source["kind"], SOURCE_KINDS, f"{identifier}.canonical_sources.kind"); pointer(required_string(source["ref"], f"{identifier}.canonical_sources.ref"), root, f"{identifier}.canonical_sources.ref")
         patterns = required(record["violation_patterns"], f"{identifier}.violation_patterns"); triggers = required(record["triggers"], f"{identifier}.triggers")
         if not isinstance(patterns, list) or not isinstance(triggers, list): raise ValueError(f"{identifier}: invalid patterns or triggers")
         for trigger in triggers: required_string(trigger, f"{identifier}.trigger")
@@ -219,6 +219,32 @@ def check_readme(actual, expected):
     if actual != expected: raise ValueError("generated README drift; run scripts/guardrail_registry.py")
 
 
+def diagnostic_record(data, identifier):
+    guardrails = data.get("guardrails") if isinstance(data, dict) else None
+    if not isinstance(guardrails, list): return None
+    for record in guardrails:
+        if not isinstance(record, dict) or record.get("id") != identifier: continue
+        if all(isinstance(record.get(key), str) for key in ("invariant_summary", "required_next_action")):
+            return record
+
+
+def diagnostic(error, data, evidence):
+    try: evidence = evidence.relative_to(ROOT)
+    except ValueError: pass
+    record = diagnostic_record(data, "DG-SOT-001")
+    for identifier in INITIAL_IDS:
+        if identifier in str(error) and diagnostic_record(data, identifier):
+            record = diagnostic_record(data, identifier); break
+    lines = ["GUARDRAIL_REGISTRY_INVALID", f"Evidence: {evidence}: {error}"]
+    if record:
+        sources = [source["ref"] for source in record.get("canonical_sources", []) if isinstance(source, dict) and isinstance(source.get("ref"), str) and source["ref"]]
+        lines[1:1] = [f"Guardrail ID: {record['id']}", f"Invariant summary: {record['invariant_summary']}"]
+        if sources: lines.append(f"Canonical source: {', '.join(sources)}")
+        else: lines.append("Canonical source: registry-level fallback; canonical source entry is malformed or missing")
+        lines += ["Action: fail", f"Required next action: {record['required_next_action']}"]
+    return "\n".join(lines)
+
+
 def render(data):
     lines = ["<!-- GENERATED FROM registry.yaml; DO NOT EDIT. -->", "", "# Design Guardrails", "", "Read `registry.yaml` for the machine-readable canonical registry. Canonical sources own each guardrail's meaning.", ""]
     for record in data["guardrails"]:
@@ -229,13 +255,18 @@ def render(data):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(); parser.add_argument("--check", action="store_true"); args = parser.parse_args(argv)
+    data = None
+    evidence = REGISTRY
     try:
-        data = validate(parse_yaml(REGISTRY.read_text()), ROOT); expected = render(data)
+        data = parse_yaml(REGISTRY.read_text())
+        validate(data, ROOT); expected = render(data)
         if args.check:
+            evidence = README
             check_readme(README.read_text(), expected)
         else: README.write_text(expected)
     except (OSError, ValueError) as error:
-        print(f"GUARDRAIL_REGISTRY_INVALID: {error}", file=sys.stderr); return 1
+        print(diagnostic(error, data, evidence), file=sys.stderr)
+        return 1
     return 0
 
 

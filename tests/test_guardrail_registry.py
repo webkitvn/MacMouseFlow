@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 
 import copy
+import contextlib
+import io
 import pathlib
+import tempfile
 import unittest
+from unittest import mock
 
 from scripts import guardrail_registry
 
@@ -212,6 +216,54 @@ class GuardrailRegistryTests(unittest.TestCase):
         guardrail_registry.check_readme(check, expected)
         with self.assertRaises(ValueError):
             guardrail_registry.check_readme(check + "drift\n", expected)
+
+    def test_check_failures_report_actionable_d1_payload(self):
+        cases = [
+            ("schema", "DG-SOT-001", self.registry_text().replace("schema_version: 1", "schema_version: null", 1), README.read_text()),
+            ("source", "DG-DOM-001", self.registry_text().replace("ref: CONTEXT.md", "ref: docs/missing.md", 1), README.read_text()),
+            ("generated drift", "DG-SOT-001", self.registry_text(), README.read_text() + "drift\n"),
+            ("null guardrails", None, self.registry_text().replace("guardrails:\n", "guardrails: null\n", 1).split("  - id:", 1)[0], README.read_text()),
+            ("string record", "DG-SOT-001", self.registry_text().replace("  - id: DG-DOM-001", "  - not-a-record\n  - id: DG-DOM-001", 1), README.read_text()),
+            ("malformed source", "DG-DOM-001", self.registry_text().replace("      - kind: context\n        ref: CONTEXT.md", "      - malformed-source", 1), README.read_text()),
+            ("empty source", "DG-DOM-001", self.registry_text().replace("    canonical_sources:\n      - kind: context\n        ref: CONTEXT.md\n      - kind: adr\n        ref: docs/adr/0001-native-adapter-rust-engine-boundary.md", "    canonical_sources: []", 1), README.read_text()),
+        ]
+        for name, identifier, registry, readme in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                registry_path = pathlib.Path(directory) / "registry.yaml"
+                readme_path = pathlib.Path(directory) / "README.md"
+                registry_path.write_text(registry); readme_path.write_text(readme)
+                stderr = io.StringIO()
+                with mock.patch.object(guardrail_registry, "REGISTRY", registry_path), mock.patch.object(guardrail_registry, "README", readme_path), contextlib.redirect_stderr(stderr):
+                    self.assertEqual(guardrail_registry.main(["--check"]), 1)
+                output = stderr.getvalue()
+                self.assertIn("GUARDRAIL_REGISTRY_INVALID", output)
+                if identifier:
+                    record = next(item for item in guardrail_registry.parse_yaml(registry)["guardrails"] if isinstance(item, dict) and item["id"] == identifier)
+                    for field in (f"Guardrail ID: {record['id']}", f"Invariant summary: {record['invariant_summary']}", "Action: fail", f"Required next action: {record['required_next_action']}"):
+                        self.assertIn(field, output)
+                    if name == "empty source":
+                        self.assertIn("Canonical source: registry-level fallback;", output)
+                    else:
+                        sources = [source["ref"] for source in record["canonical_sources"] if isinstance(source, dict) and source.get("ref")]
+                        self.assertIn(f"Canonical source: {', '.join(sources)}", output)
+                self.assertIn("Evidence:", output)
+                self.assertIn("README.md" if name == "generated drift" else "registry.yaml", output)
+
+    def test_semantic_only_text_is_not_a_d1_heuristic_failure(self):
+        registry = self.registry_text().replace(
+            "Infer a mouse, trackpad, or same device from granularity, timing, missing identity, or undocumented correlation.",
+            "Add helper XPC IPC device architecture callback keyword discussion.",
+            1,
+        )
+        data = guardrail_registry.parse_yaml(registry)
+        with tempfile.TemporaryDirectory() as directory:
+            registry_path = pathlib.Path(directory) / "registry.yaml"
+            readme_path = pathlib.Path(directory) / "README.md"
+            registry_path.write_text(registry); readme_path.write_text(guardrail_registry.render(data))
+            stderr = io.StringIO()
+            with mock.patch.object(guardrail_registry, "REGISTRY", registry_path), mock.patch.object(guardrail_registry, "README", readme_path), contextlib.redirect_stderr(stderr):
+                self.assertEqual(guardrail_registry.main(["--check"]), 0)
+            self.assertEqual(stderr.getvalue(), "")
 
     def test_cli_has_no_alternate_registry_path(self):
         with self.assertRaises(SystemExit):
