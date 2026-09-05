@@ -33,7 +33,7 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual(missing, [], f"missing scaffold paths: {missing}")
 
         rust_toolchain = (ROOT / "rust-toolchain.toml").read_text()
-        self.assertIn('channel = "1.98.0"', rust_toolchain)
+        self.assertIn('channel = "1.98.1"', rust_toolchain)
         self.assertIn('"rustfmt"', rust_toolchain)
         self.assertIn('"clippy"', rust_toolchain)
         self.assertEqual((ROOT / ".xcode-version").read_text().strip(), "26.6")
