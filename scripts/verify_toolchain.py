@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUST_PIN = "1.98.0"
+RUST_PIN = "1.98.1"
 XCODE_PIN = "26.6"
 
 
