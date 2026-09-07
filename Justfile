@@ -22,6 +22,9 @@ check:
 test:
     python3 -m unittest discover -s tests -p 'test_*.py'
     cargo test --workspace --locked
+    cargo build -p pointer-input-ffi --locked
+    cc -std=c11 -Wall -Wextra -Werror -Irust/ffi/include rust/ffi/tests/abi_contract.c -Ltarget/debug -lpointer_input_ffi -Wl,-rpath,"$PWD/target/debug" -o target/abi_contract
+    target/abi_contract
 
 ci: check test build
 
