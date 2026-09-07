@@ -28,6 +28,9 @@ int main(void) {
 
     assert(pointer_input_engine_create_v1(&engine) == POINTER_INPUT_STATUS_SUCCESS_V1);
     assert(engine != NULL);
+    void *owner = engine;
+    assert(pointer_input_engine_create_v1(&engine) == POINTER_INPUT_STATUS_INVALID_ARGUMENT_V1);
+    assert(engine == owner);
     assert(pointer_input_engine_set_configuration_v1(engine, &reverse) == POINTER_INPUT_STATUS_SUCCESS_V1);
     assert(pointer_input_engine_evaluate_v1(engine, &event, &output) == POINTER_INPUT_STATUS_SUCCESS_V1);
     assert(output.decision == POINTER_INPUT_DECISION_REPLACE_V1);

@@ -248,6 +248,26 @@ fn overflow_returns_failure_and_preserve() {
 }
 
 #[test]
+fn create_rejects_live_owner_without_overwriting_it() {
+    let mut engine = core::ptr::null_mut();
+
+    assert_eq!(
+        unsafe { pointer_input_engine_create_v1(&raw mut engine) },
+        PointerInputStatusV1::Success
+    );
+    let owner = engine;
+    assert_eq!(
+        unsafe { pointer_input_engine_create_v1(&raw mut engine) },
+        PointerInputStatusV1::InvalidArgument
+    );
+    assert_eq!(engine, owner);
+    assert_eq!(
+        unsafe { pointer_input_engine_destroy_v1(&raw mut engine) },
+        PointerInputStatusV1::Success
+    );
+}
+
+#[test]
 fn destroy_nulls_owning_variable_and_repeat_is_safe() {
     let mut engine = core::ptr::null_mut();
 

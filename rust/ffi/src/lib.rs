@@ -165,12 +165,16 @@ unsafe fn engine_from<'a>(handle: *mut c_void) -> &'a engine::Engine {
 /// Allocates an opaque engine with system direction.
 ///
 /// # Safety
-/// `out_engine` must point to writable storage for one handle.
+/// `out_engine` must point to writable, initially null storage for one owner handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pointer_input_engine_create_v1(
     out_engine: *mut *mut c_void,
 ) -> PointerInputStatusV1 {
     if out_engine.is_null() {
+        return PointerInputStatusV1::InvalidArgument;
+    }
+    // SAFETY: validated pointer to caller-owned handle storage.
+    if !unsafe { out_engine.read() }.is_null() {
         return PointerInputStatusV1::InvalidArgument;
     }
 

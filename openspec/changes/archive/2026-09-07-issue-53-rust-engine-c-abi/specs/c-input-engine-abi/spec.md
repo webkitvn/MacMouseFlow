@@ -38,7 +38,11 @@ Before evaluating a request, the ABI SHALL initialize a non-null output to Prese
 - **THEN** the call returns a non-success status and the caller observes Preserve rather than suppression or a fabricated replacement
 
 ### Requirement: Provide opaque engine lifetime with owner-retained concurrent use
-The ABI SHALL create an opaque engine allocation with one uniquely owned handle variable. Its destruction operation SHALL receive a pointer to that owner variable, set it to null before releasing the allocation, and accept a null owner variable as an idempotent no-op. Copied non-owning handle values MAY call configuration update and evaluation concurrently while the owner guarantees the allocation remains live. Callers MUST NOT destroy concurrently, use after destruction, or use stale or fabricated handles; those are contract violations.
+The ABI SHALL create an opaque engine allocation only through an initially null owner handle variable; a non-null owner variable MUST return invalid argument unchanged without allocating or overwriting its live handle. Its destruction operation SHALL receive a pointer to that owner variable, set it to null before releasing the allocation, and accept a null owner variable as an idempotent no-op. Copied non-owning handle values MAY call configuration update and evaluation concurrently while the owner guarantees the allocation remains live. Callers MUST NOT destroy concurrently, use after destruction, or use stale or fabricated handles; those are contract violations.
+
+#### Scenario: Live owner cannot be replaced
+- **WHEN** a caller creates an engine and then calls create again through the same live owner variable
+- **THEN** the second call returns invalid argument, leaves the owner variable unchanged, and the original engine remains destroyable
 
 #### Scenario: Repeat destruction through the same variable is safe
 - **WHEN** a caller destroys an engine through a valid pointer-to-handle and then repeats destruction through that same variable

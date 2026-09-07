@@ -56,9 +56,10 @@ typedef struct pointer_input_decision_v1 {
 } pointer_input_decision_v1;
 
 /*
- * Returns the uniquely owned handle variable through out_engine. Only that owner may destroy the
- * allocation with pointer_input_engine_destroy_v1. A copied non-owning handle value may call
- * set_configuration or evaluate concurrently while the owner keeps the allocation live.
+ * out_engine must point to an initially NULL owner variable. A non-NULL owner variable is
+ * rejected unchanged. On success it receives the uniquely owned handle; only that owner may
+ * destroy the allocation with pointer_input_engine_destroy_v1. A copied non-owning handle value
+ * may call set_configuration or evaluate concurrently while the owner keeps the allocation live.
  */
 pointer_input_status_v1 pointer_input_engine_create_v1(void **out_engine);
 
