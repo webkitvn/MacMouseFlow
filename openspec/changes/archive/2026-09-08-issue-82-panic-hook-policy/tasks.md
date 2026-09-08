@@ -1,0 +1,18 @@
+## 1. Establish policy and governance evidence
+
+- [x] 1.1 Add `docs/adr/0005-rust-ffi-process-lifetime-panic-hook-policy.md` that records FFI ownership, once-before-allocation installation, process lifetime, TLS evaluation classification, non-input delegation, unwind strategy, payload disposal, diagnostics, and null-owner startup failure; verified it matches Issue #82 Resolution without changing existing ADRs.
+- [x] 1.2 Add ADR 0005 as a canonical source only to applicable active runtime/reliability guardrails while preserving their invariant, enforcement, waiver, and lifecycle fields; verified `python3 scripts/guardrail_registry.py --check` passes.
+
+## 2. Implement fail-open panic containment test-first
+
+- [x] 2.1 Add failing public ABI tests for silent evaluation hook behavior, delegation for unrelated panics, Panic plus Preserve, startup failure retaining a null owner, and panic-on-drop payload containment; verified they were absent before policy implementation and introduce no production C symbol or fault API.
+- [x] 2.2 Add the compile-time unwind-strategy guard and minimal process-lifetime hook installation before engine allocation; verified `RUSTFLAGS='-C panic=abort' cargo check -p pointer-input-ffi --locked` fails at the guard and installation failure returns Panic with a null owner.
+- [x] 2.3 Implement const-initialized TLS evaluation scope, captured-hook delegation, hook suppression during marked evaluation, and no ordinary hook restore; verified non-panicking TLS access fails evaluation open or delegates unmarked panic, serialized public-ABI tests observe silent callback panic handling and unchanged unrelated-panic delegation, and synchronized one-time installation rejects installing-thread reentry without waiting, retries after failure, completes concurrent creation with one installed policy, and remains installed after all engines destroy.
+- [x] 2.4 Contain caught panic-payload disposal in nested `catch_unwind` and retain only a secondary destructor-panic payload with `mem::forget`; verified the panic-on-drop test returns Panic with Preserve and no panic escapes the ABI.
+- [x] 2.5 Retain the existing private `cfg(test)` injection only as internal support for established public-ABI assertions; verified no production-facing fault-control symbol, dependency, trait, mock, helper, or adapter is added.
+
+## 3. Reconcile evidence and validate
+
+- [x] 3.1 Reconcile `openspec/changes/archive/2026-09-07-issue-53-rust-engine-c-abi/` evidence after applying the live #82 policy so historical completion does not override the former live blocker; verified the archive identifies Issue #82, ADR 0005, and public-ABI policy evidence as superseding panic-containment completion evidence without reopening or re-archiving #53.
+- [x] 3.2 Run `just check`, `just test`, `just ci`, `openspec validate --all --no-interactive`, and `git diff --check`; verified public ABI tests and the real C contract pass. Strict latency is NOT_PROVEN because the canonical reference-Mac benchmark was not run.
+- [x] 3.3 Archive after ADR, guardrail provenance, policy implementation, public ABI evidence, Issue #53 evidence reconciliation, and all validation evidence are complete: synced the `c-input-engine-abi` delta into its main spec, validated it with `openspec validate --specs`, and moved this change under `openspec/changes/archive/`.

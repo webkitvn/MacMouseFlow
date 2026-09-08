@@ -75,6 +75,10 @@ Implementation begins with failing Rust public-seam behavior tests, then the min
 3. A later native-runtime change adopts only the published `_v1` header and symbols. It preserves native input whenever the ABI status is non-success or decision is Preserve.
 4. Rollback is removal/reversion of this unconsumed slice. Once a native caller ships, retain `_v1` unchanged and add a separately specified `_vN` for any incompatible extension.
 
+## Superseding panic-containment evidence
+
+This archive records the original Issue #53 implementation evidence. Its `catch_unwind` claim does not supersede the live process-wide panic-hook and caught-payload policy resolved by Issue #82. That policy, ADR 0005, and its public-ABI evidence are the canonical completion evidence for callback-originated Rust panic containment.
+
 ## STOP Conditions
 
 STOP implementation and return to the Issue/Wayfinder decision process if any of the following becomes necessary:

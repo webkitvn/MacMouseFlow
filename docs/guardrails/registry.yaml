@@ -111,6 +111,8 @@ guardrails:
         ref: docs/adr/0001-native-adapter-rust-engine-boundary.md
       - kind: adr
         ref: docs/adr/0003-bounded-structured-observability-pipeline.md
+      - kind: adr
+        ref: docs/adr/0005-rust-ffi-process-lifetime-panic-hook-policy.md
       - kind: repository_contract
         ref: AGENTS.md
     invariant_summary: >-
@@ -164,6 +166,8 @@ guardrails:
     canonical_sources:
       - kind: adr
         ref: docs/adr/0001-native-adapter-rust-engine-boundary.md
+      - kind: adr
+        ref: docs/adr/0005-rust-ffi-process-lifetime-panic-hook-policy.md
       - kind: repository_contract
         ref: AGENTS.md
     invariant_summary: >-

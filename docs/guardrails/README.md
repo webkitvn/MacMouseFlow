@@ -33,6 +33,7 @@ Read `registry.yaml` for the machine-readable canonical registry. Canonical sour
 - **Canonical sources:**
   - `adr`: docs/adr/0001-native-adapter-rust-engine-boundary.md
   - `adr`: docs/adr/0003-bounded-structured-observability-pipeline.md
+  - `adr`: docs/adr/0005-rust-ffi-process-lifetime-panic-hook-policy.md
   - `repository_contract`: AGENTS.md
 
 ## DG-REL-001 — Preserve Original Input on Bridge/Engine Failure
@@ -43,6 +44,7 @@ Read `registry.yaml` for the machine-readable canonical registry. Canonical sour
 - **Required next action:** Restore fail-open behavior and demonstrate it at an established public seam.
 - **Canonical sources:**
   - `adr`: docs/adr/0001-native-adapter-rust-engine-boundary.md
+  - `adr`: docs/adr/0005-rust-ffi-process-lifetime-panic-hook-policy.md
   - `repository_contract`: AGENTS.md
 
 ## DG-VER-001 — Seam-Gated TDD
