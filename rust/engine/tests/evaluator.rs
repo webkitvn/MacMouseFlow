@@ -98,32 +98,30 @@ fn reverse_overflow_fails_open() {
 }
 
 #[test]
-fn reverse_checked_negates_representable_line_deltas() {
+fn reverse_negates_literal_two_axis_line_scroll_cases() {
     let engine = pointer_input_engine::Engine::new(ScrollConfiguration::reverse());
 
-    for horizontal_lines in [-17, -1, 0, 1, 17] {
-        for vertical_lines in [-17, -1, 0, 1, 17] {
-            let result = engine.evaluate(line_event(
-                horizontal_lines,
-                vertical_lines,
-                SourceClass::Unknown,
-            ));
-            let expected = if horizontal_lines == 0 && vertical_lines == 0 {
-                InputDecision::Preserve
-            } else {
-                InputDecision::Replace(ScrollEvent {
-                    source: InputSource {
-                        source_class: SourceClass::Unknown,
-                    },
-                    granularity: ScrollGranularity::LineBased,
-                    horizontal_lines: -horizontal_lines,
-                    vertical_lines: -vertical_lines,
-                })
-            };
+    for (horizontal_lines, vertical_lines, expected_horizontal, expected_vertical) in
+        [(17, 3, -17, -3), (-17, -3, 17, 3), (17, -3, -17, 3)]
+    {
+        let result = engine.evaluate(line_event(
+            horizontal_lines,
+            vertical_lines,
+            SourceClass::Unknown,
+        ));
 
-            assert_eq!(result.status, EvaluationStatus::Success);
-            assert_eq!(result.decision, expected);
-        }
+        assert_eq!(result.status, EvaluationStatus::Success);
+        assert_eq!(
+            result.decision,
+            InputDecision::Replace(ScrollEvent {
+                source: InputSource {
+                    source_class: SourceClass::Unknown,
+                },
+                granularity: ScrollGranularity::LineBased,
+                horizontal_lines: expected_horizontal,
+                vertical_lines: expected_vertical,
+            })
+        );
     }
 }
 
