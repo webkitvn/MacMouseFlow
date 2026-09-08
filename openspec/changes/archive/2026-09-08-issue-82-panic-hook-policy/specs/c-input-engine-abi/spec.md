@@ -22,7 +22,7 @@ Before evaluating a request, the ABI SHALL initialize a non-null output to Prese
 ## ADDED Requirements
 
 ### Requirement: Install a process-lifetime panic policy before engine delivery
-The ABI SHALL install its process-wide panic policy once during successful engine creation before engine allocation or input delivery. Installation SHALL use one-time state: one creator may install, a concurrent creator MAY wait outside input evaluation for completion, a reentrant creator on the installing thread SHALL return a non-success status with a null owner, and a failed installation SHALL permit a later retry. The creation request SHALL fail with a non-success status and leave the owner handle null if installation panics or cannot establish the policy. The ABI SHALL retain ownership of the installed policy for the process lifetime and MUST NOT ordinarily restore or replace it during engine destruction or mutate it per input event.
+The ABI SHALL install its process-wide panic policy once during successful engine creation before engine allocation or input delivery. Installation SHALL use one-time state: one creator may install, every additional creator while installation is in progress SHALL promptly return a non-success status with a null owner without waiting, and a failed installation SHALL permit a later retry. The creation request SHALL fail with a non-success status and leave the owner handle null if installation panics or cannot establish the policy. The ABI SHALL retain ownership of the installed policy for the process lifetime and MUST NOT ordinarily restore or replace it during engine destruction or mutate it per input event.
 
 #### Scenario: First successful creation installs policy
 - **WHEN** creation receives a valid null owner variable and no policy is installed
@@ -32,13 +32,9 @@ The ABI SHALL install its process-wide panic policy once during successful engin
 - **WHEN** installation panics or otherwise fails during creation
 - **THEN** creation returns a non-success status, leaves the owner variable null, and native input delivery does not start
 
-#### Scenario: Reentrant creation does not wait for installation
-- **WHEN** creation is reentered on the thread currently installing the policy
-- **THEN** it returns a non-success status with a null owner rather than waiting, and a later creation may retry after installation failure or use the installed policy after success
-
-#### Scenario: Concurrent creation shares installed policy
-- **WHEN** another thread creates an engine while policy installation is in progress
-- **THEN** it completes after the installation outcome and uses the single installed policy after success
+#### Scenario: Creation fails during installation
+- **WHEN** any additional creation occurs while policy installation is in progress
+- **THEN** it promptly returns a non-success status with a null owner without waiting, and a later creation may retry after installation failure or use the installed policy after success
 
 #### Scenario: TLS is unavailable during a non-input panic
 - **WHEN** the panic hook cannot access its thread-local evaluation marker

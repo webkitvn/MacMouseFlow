@@ -7,7 +7,7 @@ use std::{
     mem,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
-    sync::{Condvar, Mutex},
+    sync::Mutex,
 };
 
 use pointer_input_engine as engine;
@@ -17,7 +17,6 @@ compile_error!("pointer-input-ffi requires panic = \"unwind\"");
 
 thread_local! {
     static EVALUATING: Cell<bool> = const { Cell::new(false) };
-    static INSTALLING_HOOK: Cell<bool> = const { Cell::new(false) };
 }
 
 const HOOK_UNINSTALLED: u8 = 0;
@@ -25,7 +24,6 @@ const HOOK_INSTALLING: u8 = 1;
 const HOOK_INSTALLED: u8 = 2;
 
 static PANIC_HOOK_STATE: Mutex<u8> = Mutex::new(HOOK_UNINSTALLED);
-static PANIC_HOOK_STATE_CHANGED: Condvar = Condvar::new();
 
 type PanicPayload = Box<dyn Any + Send + 'static>;
 
@@ -147,78 +145,54 @@ fn panic_status(payload: PanicPayload) -> PointerInputStatusV1 {
     PointerInputStatusV1::Panic
 }
 
-fn finish_hook_installation(state: u8) {
-    let mut current = PANIC_HOOK_STATE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *current = state;
-    PANIC_HOOK_STATE_CHANGED.notify_all();
-}
-
 fn install_panic_hook() -> Result<(), ()> {
-    let mut state = PANIC_HOOK_STATE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    loop {
+    {
+        let mut state = PANIC_HOOK_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match *state {
             HOOK_INSTALLED => return Ok(()),
-            HOOK_UNINSTALLED => {
-                *state = HOOK_INSTALLING;
-                break;
-            }
-            HOOK_INSTALLING if INSTALLING_HOOK.try_with(Cell::get).unwrap_or(false) => {
-                return Err(());
-            }
-            HOOK_INSTALLING => {
-                state = PANIC_HOOK_STATE_CHANGED
-                    .wait(state)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-            }
+            HOOK_UNINSTALLED => *state = HOOK_INSTALLING,
+            HOOK_INSTALLING => return Err(()),
             _ => return Err(()),
         }
     }
-    drop(state);
 
-    let result = INSTALLING_HOOK.try_with(|installing| {
-        installing.set(true);
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            #[cfg(test)]
-            if PANIC_HOOK_INSTALL_FAILURE.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                panic!("test-only hook installation failure");
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        #[cfg(test)]
+        if PANIC_HOOK_INSTALL_FAILURE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            panic!("test-only hook installation failure");
+        }
+        #[cfg(test)]
+        {
+            let gate = INSTALLATION_GATE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            if let Some((ready, release)) = gate {
+                let _ = ready.send(());
+                let _ = release.recv();
             }
-            #[cfg(test)]
-            {
-                let gate = INSTALLATION_GATE
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .take();
-                if let Some(gate) = gate {
-                    gate.wait();
-                }
+        }
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !EVALUATING.try_with(Cell::get).unwrap_or(false) {
+                previous_hook(info);
             }
-            let previous_hook = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |info| {
-                if !EVALUATING.try_with(Cell::get).unwrap_or(false) {
-                    previous_hook(info);
-                }
-            }));
         }));
-        installing.set(false);
-        result
-    });
+    }));
 
+    let mut state = PANIC_HOOK_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     match result {
-        Ok(Ok(())) => {
-            finish_hook_installation(HOOK_INSTALLED);
+        Ok(()) => {
+            *state = HOOK_INSTALLED;
             Ok(())
         }
-        Ok(Err(payload)) => {
-            finish_hook_installation(HOOK_UNINSTALLED);
+        Err(payload) => {
+            *state = HOOK_UNINSTALLED;
             discard_panic_payload(payload);
-            Err(())
-        }
-        Err(_) => {
-            finish_hook_installation(HOOK_UNINSTALLED);
             Err(())
         }
     }
@@ -445,7 +419,9 @@ static PANIC_ON_DROP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 static PANIC_HOOK_INSTALL_FAILURE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 #[cfg(test)]
-static INSTALLATION_GATE: Mutex<Option<std::sync::Arc<std::sync::Barrier>>> = Mutex::new(None);
+static INSTALLATION_GATE: Mutex<
+    Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+> = Mutex::new(None);
 
 #[cfg(test)]
 struct PanicOnDrop;
@@ -476,11 +452,13 @@ fn maybe_inject_evaluation_panic() {}
 mod tests {
     use super::*;
     use std::{
-        panic::{AssertUnwindSafe, catch_unwind},
+        panic::catch_unwind,
         sync::{
-            Arc, Barrier, Mutex,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
         },
+        time::Duration,
     };
 
     fn event() -> PointerInputEventV1 {
@@ -500,127 +478,133 @@ mod tests {
         // ponytail: this sole hook-touching unit test retains the wrapper until process exit.
         let _previous_hook = std::panic::take_hook();
         let delegated = Arc::new(AtomicUsize::new(0));
-        let trigger_reentrant_create = Arc::new(AtomicBool::new(true));
-        let reentrant_result = Arc::new(Mutex::new(None));
+        let hook_creates = Arc::new(AtomicUsize::new(2));
+        let (hook_create_sender, hook_create_receiver) = mpsc::channel();
         let counter = Arc::clone(&delegated);
-        let reenter = Arc::clone(&trigger_reentrant_create);
-        let reentrant_result_for_hook = Arc::clone(&reentrant_result);
+        let creates = Arc::clone(&hook_creates);
         std::panic::set_hook(Box::new(move |_| {
             counter.fetch_add(1, Ordering::Relaxed);
-            if reenter.swap(false, Ordering::Relaxed) {
+            if creates
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
                 let mut owner = ptr::null_mut();
                 let status = unsafe { pointer_input_engine_create_v1(&raw mut owner) };
-                *reentrant_result_for_hook
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some((status, owner.is_null()));
+                let _ = hook_create_sender.send((status, owner.is_null()));
             }
         }));
         *INSTALLATION_GATE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            let event = event();
-            let mut output = preserve_output();
-            let mut failed_owner = ptr::null_mut();
+        let event = event();
+        let mut output = preserve_output();
+        let mut failed_owner = ptr::null_mut();
+        PANIC_HOOK_INSTALL_FAILURE.store(true, Ordering::Relaxed);
+        let failed_startup = unsafe { pointer_input_engine_create_v1(&raw mut failed_owner) };
+        let reentrant_startup = hook_create_receiver.recv_timeout(Duration::from_secs(1));
 
-            PANIC_HOOK_INSTALL_FAILURE.store(true, Ordering::Relaxed);
-            let failed_startup = unsafe { pointer_input_engine_create_v1(&raw mut failed_owner) };
-            let reentrant_startup = *reentrant_result
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (installer_ready_sender, installer_ready_receiver) = mpsc::channel();
+        let (installer_release_sender, installer_release_receiver) = mpsc::channel();
+        *INSTALLATION_GATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some((installer_ready_sender, installer_release_receiver));
+        let starter = std::thread::spawn(move || {
+            let mut owner = ptr::null_mut();
+            let status = unsafe { pointer_input_engine_create_v1(&raw mut owner) };
+            (status, owner as usize)
+        });
+        match installer_ready_receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(()) => {}
+            Err(error) => {
+                let _ = installer_release_sender.send(());
+                hook_creates.store(0, Ordering::Relaxed);
+                panic!("installer did not become ready: {error:?}");
+            }
+        }
+        let mut concurrent_owner = ptr::null_mut();
+        let concurrent_status =
+            unsafe { pointer_input_engine_create_v1(&raw mut concurrent_owner) };
 
-            let install_gate = Arc::new(Barrier::new(2));
-            *INSTALLATION_GATE
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&install_gate));
-            let starter = std::thread::spawn(move || {
-                let mut owner = ptr::null_mut();
-                let status = unsafe { pointer_input_engine_create_v1(&raw mut owner) };
-                (status, owner as usize)
-            });
-            install_gate.wait();
-            let mut concurrent_owner = ptr::null_mut();
-            let concurrent_status =
-                unsafe { pointer_input_engine_create_v1(&raw mut concurrent_owner) };
-            let (startup_status, startup_owner) =
-                starter.join().expect("installing creator must not panic");
-            let mut startup_owner = startup_owner as *mut c_void;
-            let delegated_before_unrelated = delegated.load(Ordering::Relaxed);
-            let _ = catch_unwind(|| panic!("unrelated test panic"));
-            let delegated_after_unrelated = delegated.load(Ordering::Relaxed);
+        let panic_thread = std::thread::spawn(|| {
+            let _ = catch_unwind(|| panic!("unrelated test panic during installation"));
+        });
+        let concurrent_hook_create = match hook_create_receiver.recv_timeout(Duration::from_secs(1))
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = installer_release_sender.send(());
+                hook_creates.store(0, Ordering::Relaxed);
+                panic!("hook-mediated create did not return: {error:?}");
+            }
+        };
+        let _ = installer_release_sender.send(());
+        let starter_result = starter.join();
+        let panic_thread_result = panic_thread.join();
+        *INSTALLATION_GATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 
-            assert_eq!(failed_startup, PointerInputStatusV1::Panic);
-            assert!(failed_owner.is_null());
-            assert_eq!(reentrant_startup, Some((PointerInputStatusV1::Panic, true)));
-            assert_eq!(startup_status, PointerInputStatusV1::Success);
-            assert_eq!(concurrent_status, PointerInputStatusV1::Success);
-            assert_eq!(delegated_after_unrelated, delegated_before_unrelated + 1);
+        let (startup_status, startup_owner) =
+            starter_result.expect("installing creator must not panic");
+        let mut startup_owner = startup_owner as *mut c_void;
+        let delegated_before_unrelated = delegated.load(Ordering::Relaxed);
+        let _ = catch_unwind(|| panic!("unrelated test panic"));
+        let delegated_after_unrelated = delegated.load(Ordering::Relaxed);
 
-            // ponytail: test-only latch, remove if a real internal fault path gains public-seam coverage.
-            PANIC_ON_EVALUATE.store(true, Ordering::Relaxed);
-            let delegated_before_evaluation = delegated.load(Ordering::Relaxed);
-            let first_panic_status = unsafe {
-                pointer_input_engine_evaluate_v1(
-                    concurrent_owner,
-                    &raw const event,
-                    &raw mut output,
-                )
-            };
-            let first_panic_decision = output.decision;
-            let delegated_after_evaluation = delegated.load(Ordering::Relaxed);
+        // ponytail: test-only latch, remove if a real internal fault path gains public-seam coverage.
+        PANIC_ON_EVALUATE.store(true, Ordering::Relaxed);
+        let delegated_before_evaluation = delegated.load(Ordering::Relaxed);
+        let first_panic_status = unsafe {
+            pointer_input_engine_evaluate_v1(startup_owner, &raw const event, &raw mut output)
+        };
+        let first_panic_decision = output.decision;
+        let delegated_after_evaluation = delegated.load(Ordering::Relaxed);
 
-            PANIC_ON_DROP.store(true, Ordering::Relaxed);
-            let delegated_before_payload_drop = delegated.load(Ordering::Relaxed);
-            let drop_panic_status = unsafe {
-                pointer_input_engine_evaluate_v1(
-                    concurrent_owner,
-                    &raw const event,
-                    &raw mut output,
-                )
-            };
-            let drop_panic_decision = output.decision;
-            let delegated_after_payload_drop = delegated.load(Ordering::Relaxed);
-            let concurrent_destroy_status =
-                unsafe { pointer_input_engine_destroy_v1(&raw mut concurrent_owner) };
-            let startup_destroy_status =
-                unsafe { pointer_input_engine_destroy_v1(&raw mut startup_owner) };
+        PANIC_ON_DROP.store(true, Ordering::Relaxed);
+        let delegated_before_payload_drop = delegated.load(Ordering::Relaxed);
+        let drop_panic_status = unsafe {
+            pointer_input_engine_evaluate_v1(startup_owner, &raw const event, &raw mut output)
+        };
+        let drop_panic_decision = output.decision;
+        let delegated_after_payload_drop = delegated.load(Ordering::Relaxed);
+        let startup_destroy_status =
+            unsafe { pointer_input_engine_destroy_v1(&raw mut startup_owner) };
 
-            let mut post_destroy_owner = ptr::null_mut();
-            let post_destroy_status =
-                unsafe { pointer_input_engine_create_v1(&raw mut post_destroy_owner) };
-            let post_destroy_evaluation = unsafe {
-                pointer_input_engine_evaluate_v1(
-                    post_destroy_owner,
-                    &raw const event,
-                    &raw mut output,
-                )
-            };
-            let post_destroy_cleanup =
-                unsafe { pointer_input_engine_destroy_v1(&raw mut post_destroy_owner) };
-
-            assert_eq!(first_panic_status, PointerInputStatusV1::Panic);
-            assert_eq!(first_panic_decision, POINTER_INPUT_DECISION_PRESERVE_V1);
-            assert_eq!(delegated_after_evaluation, delegated_before_evaluation);
-            assert_eq!(drop_panic_status, PointerInputStatusV1::Panic);
-            assert_eq!(drop_panic_decision, POINTER_INPUT_DECISION_PRESERVE_V1);
-            assert_eq!(delegated_after_payload_drop, delegated_before_payload_drop);
-            assert_eq!(concurrent_destroy_status, PointerInputStatusV1::Success);
-            assert_eq!(startup_destroy_status, PointerInputStatusV1::Success);
-            assert_eq!(post_destroy_status, PointerInputStatusV1::Success);
-            assert_eq!(post_destroy_evaluation, PointerInputStatusV1::Success);
-            assert_eq!(post_destroy_cleanup, PointerInputStatusV1::Success);
-        }));
+        let mut post_destroy_owner = ptr::null_mut();
+        let post_destroy_status =
+            unsafe { pointer_input_engine_create_v1(&raw mut post_destroy_owner) };
+        let post_destroy_evaluation = unsafe {
+            pointer_input_engine_evaluate_v1(post_destroy_owner, &raw const event, &raw mut output)
+        };
+        let post_destroy_cleanup =
+            unsafe { pointer_input_engine_destroy_v1(&raw mut post_destroy_owner) };
 
         PANIC_ON_EVALUATE.store(false, Ordering::Relaxed);
         PANIC_ON_DROP.store(false, Ordering::Relaxed);
         PANIC_HOOK_INSTALL_FAILURE.store(false, Ordering::Relaxed);
-        *INSTALLATION_GATE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        if let Err(payload) = result {
-            std::panic::resume_unwind(payload);
-        }
+
+        assert_eq!(failed_startup, PointerInputStatusV1::Panic);
+        assert!(failed_owner.is_null());
+        assert_eq!(reentrant_startup, Ok((PointerInputStatusV1::Panic, true)));
+        assert_eq!(concurrent_status, PointerInputStatusV1::Panic);
+        assert!(concurrent_owner.is_null());
+        assert_eq!(concurrent_hook_create, (PointerInputStatusV1::Panic, true));
+        assert!(panic_thread_result.is_ok());
+        assert_eq!(startup_status, PointerInputStatusV1::Success);
+        assert_eq!(first_panic_status, PointerInputStatusV1::Panic);
+        assert_eq!(first_panic_decision, POINTER_INPUT_DECISION_PRESERVE_V1);
+        assert_eq!(delegated_after_evaluation, delegated_before_evaluation);
+        assert_eq!(drop_panic_status, PointerInputStatusV1::Panic);
+        assert_eq!(drop_panic_decision, POINTER_INPUT_DECISION_PRESERVE_V1);
+        assert_eq!(delegated_after_payload_drop, delegated_before_payload_drop);
+        assert_eq!(delegated_after_unrelated, delegated_before_unrelated + 1);
+        assert_eq!(startup_destroy_status, PointerInputStatusV1::Success);
+        assert_eq!(post_destroy_status, PointerInputStatusV1::Success);
+        assert_eq!(post_destroy_evaluation, PointerInputStatusV1::Success);
+        assert_eq!(post_destroy_cleanup, PointerInputStatusV1::Success);
     }
 }
