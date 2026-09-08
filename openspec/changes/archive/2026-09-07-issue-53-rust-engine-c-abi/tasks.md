@@ -20,3 +20,9 @@
 - [x] 4.1 Run `just check`, `just test`, and the relevant workspace build gate; verified `just check`, `just test` (including C compile/link/run), and `just ci` pass with no product API for source inference, Device Identity, suppression, platform ownership, cross-boundary heap ownership, or latency proof.
 - [x] 4.2 Run `openspec validate --all --no-interactive`, map every delta-spec requirement to command/test evidence, and update this task list with completed checkboxes only after observed success; verified validation passes. `evaluator.rs` covers source independence, LineBased/PixelsBased behavior, and status/decision separation; `abi.rs` covers layout, input/config validation, fail-open output, atomic configuration, and lifetime; `abi_contract.c` proves the public C contract; `cargo test --workspace --locked`, `just check`, `just test`, and `just ci` pass with no unresolved STOP condition.
 - [x] 4.3 Archive after implementation evidence is complete: synced `c-input-engine-abi` and `rust-input-evaluator` into main specs, validated the sync with `openspec validate --specs`, and moved this change under `openspec/changes/archive/`; archive completion is the final evidence for Issue #53.
+
+## Historical supersession
+
+Tasks 4.2 and 4.3 describe evidence available at this change's initial archive. Callback panic-containment completion is superseded by the Issue #82 Resolution, ADR 0005, and `openspec/changes/archive/2026-09-08-issue-82-panic-hook-policy/`. Public `_v1` ABI status, null-owner, and Preserve outcomes are the behavioral evidence for that later policy.
+
+No completed historical task text above is altered by this note.

@@ -26,13 +26,13 @@ This removes default-hook work from the callback path without holding a lock acr
 
 ### Classify only evaluation's dynamic extent with TLS
 
-A private const-initialized thread-local Boolean is set around the dynamic extent of the evaluation export and cleared on every exit path. Scope entry and restoration use non-panicking access: an unavailable marker fails evaluation open as Panic plus Preserve, while an unavailable marker in the hook is treated as unmarked and delegates to the captured previous hook. The installed hook reads it on the panicking thread: marked evaluation returns immediately; unmarked panics delegate to the captured previous hook.
+A private const-initialized thread-local Boolean is set around the dynamic extent of the evaluation export and cleared on every exit path. Scope entry and marker restoration use non-panicking access: an unavailable marker fails evaluation open as Panic plus Preserve, while an unavailable marker in the hook is treated as unmarked and delegates to the captured previous hook. The installed hook reads it on the panicking thread: marked evaluation returns immediately; unmarked panics delegate to the captured previous hook.
 
 This is narrower than process-wide silence and avoids platform thread-affinity assumptions. Alternatives rejected: silencing all panics (loses unrelated diagnostics), inferring native input threads (platform ownership leakage), or callback-provided flags/new ABI parameters (wider contract).
 
 ### Preserve ABI fail-open result and contain payload disposal
 
-The callback diagnostic remains existing `Panic` status plus already initialized Preserve output. Each caught panic payload is dropped inside a second `catch_unwind`; if that destructor panics, the secondary payload is retained with `mem::forget` so it cannot be dropped again. The deliberately bounded leak is limited to this pathological secondary payload.
+The callback diagnostic remains existing `Panic` status plus already initialized Preserve output. Each caught panic payload is dropped inside a second `catch_unwind`; if that destructor panics, the secondary payload is retained with `mem::forget` so it cannot be dropped again. Each pathological secondary payload is intentionally retained for that occurrence; repeated occurrences may retain additional payloads.
 
 Alternatives rejected: letting either payload drop outside containment (can unwind over C), aborting (cannot fulfill fail-open result), or diagnosing synchronously inside the callback (violates hot-path constraints).
 
