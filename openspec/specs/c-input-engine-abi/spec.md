@@ -74,7 +74,11 @@ A successful configuration update SHALL replace the evaluator's active configura
 - **THEN** a subsequent valid LineBased evaluation observes either the prior complete configuration or the reverse complete configuration, never a partial value
 
 ### Requirement: Install a process-lifetime panic policy before engine delivery
-The ABI SHALL install its process-wide panic policy once during successful engine creation before engine allocation or input delivery. Installation SHALL use one-time state: one creator may install, every additional creator while installation is in progress SHALL promptly return Busy with a null owner without waiting. Busy is the only status the bounded integration helper automatically retries; a caller that received Busy may retry after the in-progress installer succeeds or fails. Installation panics or failures SHALL return Panic with a null owner and reset state to uninstalled, after which a caller may make a separate later creation. The ABI SHALL retain ownership of the installed policy for the process lifetime and MUST NOT ordinarily restore or replace it during engine destruction or mutate it per input event.
+The ABI SHALL install its process-wide panic policy once during successful engine creation before engine allocation or input delivery. Installation SHALL use one-time state: a create invoked from a panicking thread while uninstalled SHALL return Panic with a null owner before changing state, and a later normal create may install; one creator may otherwise install, every additional creator while installation is in progress SHALL promptly return Busy with a null owner without waiting. Busy is the only status the bounded integration helper automatically retries; a caller that received Busy may retry after the in-progress installer succeeds or fails. Installation panics or failures SHALL return Panic with a null owner and reset state to uninstalled, after which a caller may make a separate later creation. The ABI SHALL retain ownership of the installed policy for the process lifetime and MUST NOT ordinarily restore or replace it during engine destruction or mutate it per input event.
+
+#### Scenario: Panicking creation before installation is rejected
+- **WHEN** a prior panic hook invokes creation while policy state is uninstalled
+- **THEN** creation returns Panic with a null owner before changing state, and a later normal creation may install the policy
 
 #### Scenario: First successful creation installs policy
 - **WHEN** creation receives a valid null owner variable and no policy is installed

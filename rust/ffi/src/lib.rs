@@ -154,6 +154,9 @@ fn install_panic_hook() -> Result<(), PointerInputStatusV1> {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match *state {
             HOOK_INSTALLED => return Ok(()),
+            HOOK_UNINSTALLED if std::thread::panicking() => {
+                return Err(PointerInputStatusV1::Panic);
+            }
             HOOK_UNINSTALLED => *state = HOOK_INSTALLING,
             HOOK_INSTALLING => return Err(PointerInputStatusV1::Busy),
             _ => return Err(PointerInputStatusV1::Panic),

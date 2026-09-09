@@ -4,7 +4,7 @@ For M0 and v0.1, `pointer-input-ffi` installs one process-global Rust panic hook
 
 The FFI crate requires `panic = "unwind"`. During marked evaluation, a panic hook returns without stderr output, backtrace generation, formatting, allocation, logging, or diagnostic enqueue. TLS access uses non-panicking lookup: unavailable TLS is treated as unmarked and delegates to the prior hook, while evaluation-scope entry failure returns the existing fail-open `Panic` status with Preserve. Caught payload disposal occurs inside a second `catch_unwind`; if disposal panics, the secondary payload is intentionally retained with `mem::forget` so neither panic escapes the ABI. If hook installation fails, creation returns a non-success status with a null owner and native input delivery must not begin.
 
-Hook installation uses three synchronized states: uninstalled, installing, and installed. One creator installs outside the state lock. Every additional creation during installation returns non-success with a null owner without waiting. A failed attempt returns to uninstalled so a later creation can retry, and a successful attempt publishes installed exactly once.
+Hook installation uses three synchronized states: uninstalled, installing, and installed. One creator installs outside the state lock. A create invoked from a panicking thread while uninstalled returns Panic with a null owner before changing state; a later normal create may install. Every additional creation during installation returns Busy with a null owner without waiting. A failed attempt returns to uninstalled so a later creation can retry, and a successful attempt publishes installed exactly once.
 
 ## Considered Options
 
