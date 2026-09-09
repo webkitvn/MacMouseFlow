@@ -25,6 +25,7 @@ test:
     cargo build -p pointer-input-ffi --locked
     cc -std=c11 -Wall -Wextra -Werror -Irust/ffi/include rust/ffi/tests/abi_contract.c -Ltarget/debug -lpointer_input_ffi -Wl,-rpath,"$PWD/target/debug" -o target/abi_contract
     target/abi_contract
+    swift test --package-path macos
 
 ci: check test build
 
@@ -34,12 +35,16 @@ hooks-install:
     @echo "Installed repository hooks from .githooks"
 
 benchmark:
-    @echo "NOT READY: strict reference-Mac latency benchmark belongs to a later execution slice" >&2
-    @exit 2
+    cargo build -p pointer-input-ffi --locked
+    swift run --package-path macos benchmark
 
 smoke:
-    @echo "NOT READY: live macOS/TCC/Accessibility/CGEventTap smoke belongs to a later execution slice" >&2
-    @exit 2
+    cargo build -p pointer-input-ffi --locked
+    swift run --package-path macos smoke
+
+macos14-behavior:
+    cargo build -p pointer-input-ffi --locked
+    swift run --package-path macos coherence-check
 
 trace-tail:
     @echo "NOT READY: structured runtime trace capability belongs to the observability execution slice" >&2

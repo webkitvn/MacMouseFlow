@@ -26,15 +26,25 @@ jobs:
       - name: Verify repository contract
         run: just ci
 
+  macos14-behavior:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install command router
+        run: brew install just
+      - name: Verify LineBased integer-field reversal
+        run: just macos14-behavior
+
   ci-gate:
     if: always()
-    needs: [verify]
+    needs: [verify, macos14-behavior]
     runs-on: ubuntu-latest
     steps:
       - name: Require verification success or intentional draft skip
         shell: bash
         run: |
-          case "${{ needs.verify.result }}" in
-            success|skipped) exit 0 ;;
+          case "${{ needs.verify.result }}:${{ needs.macos14-behavior.result }}" in
+            success:success|skipped:skipped) exit 0 ;;
             *) exit 1 ;;
           esac
