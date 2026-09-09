@@ -3,6 +3,8 @@
 
 #include "pointer_input_ffi.h"
 
+_Static_assert(POINTER_INPUT_STATUS_BUSY_V1 == UINT32_C(4), "Busy status must remain 4");
+
 static pointer_input_event_v1 line_event(int64_t horizontal, int64_t vertical) {
     return (pointer_input_event_v1){
         .version = POINTER_INPUT_ABI_VERSION_V1,

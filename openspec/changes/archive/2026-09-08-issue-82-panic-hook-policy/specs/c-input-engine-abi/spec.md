@@ -22,7 +22,7 @@ Before evaluating a request, the ABI SHALL initialize a non-null output to Prese
 ## ADDED Requirements
 
 ### Requirement: Install a process-lifetime panic policy before engine delivery
-The ABI SHALL install its process-wide panic policy once during successful engine creation before engine allocation or input delivery. Installation SHALL use one-time state: one creator may install, every additional creator while installation is in progress SHALL promptly return a non-success status with a null owner without waiting, and a failed installation SHALL permit a later retry. The creation request SHALL fail with a non-success status and leave the owner handle null if installation panics or cannot establish the policy. The ABI SHALL retain ownership of the installed policy for the process lifetime and MUST NOT ordinarily restore or replace it during engine destruction or mutate it per input event.
+The ABI SHALL install its process-wide panic policy once during successful engine creation before engine allocation or input delivery. Installation SHALL use one-time state: one creator may install, every additional creator while installation is in progress SHALL promptly return Busy with a null owner without waiting. Busy is the only status the bounded integration helper automatically retries; a caller that received Busy may retry after the in-progress installer succeeds or fails. Installation panics or failures SHALL return Panic with a null owner and reset state to uninstalled, after which a caller may make a separate later creation. The ABI SHALL retain ownership of the installed policy for the process lifetime and MUST NOT ordinarily restore or replace it during engine destruction or mutate it per input event.
 
 #### Scenario: First successful creation installs policy
 - **WHEN** creation receives a valid null owner variable and no policy is installed
@@ -30,11 +30,11 @@ The ABI SHALL install its process-wide panic policy once during successful engin
 
 #### Scenario: Policy installation failure fails startup safely
 - **WHEN** installation panics or otherwise fails during creation
-- **THEN** creation returns a non-success status, leaves the owner variable null, and native input delivery does not start
+- **THEN** creation returns Panic, leaves the owner variable null, resets installation state to uninstalled, and native input delivery does not start; a caller may make a separate later creation
 
-#### Scenario: Creation fails during installation
+#### Scenario: Creation is Busy during installation
 - **WHEN** any additional creation occurs while policy installation is in progress
-- **THEN** it promptly returns a non-success status with a null owner without waiting, and a later creation may retry after installation failure or use the installed policy after success
+- **THEN** it promptly returns Busy with a null owner without waiting; the bounded integration helper automatically retries only Busy, and its caller may retry after the installer succeeds or fails
 
 #### Scenario: TLS is unavailable during a non-input panic
 - **WHEN** the panic hook cannot access its thread-local evaluation marker

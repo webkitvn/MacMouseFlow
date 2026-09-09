@@ -35,7 +35,7 @@ fn create(engine: &mut *mut core::ffi::c_void) -> PointerInputStatusV1 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
         let status = unsafe { pointer_input_engine_create_v1(engine) };
-        if status != PointerInputStatusV1::Panic
+        if status != PointerInputStatusV1::Busy
             || !engine.is_null()
             || std::time::Instant::now() >= deadline
         {

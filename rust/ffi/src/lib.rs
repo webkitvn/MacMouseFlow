@@ -60,6 +60,8 @@ pub enum PointerInputStatusV1 {
     EvaluationFailed = 2,
     /// A Rust panic was caught before it could cross the ABI boundary.
     Panic = 3,
+    /// Another creator is installing the process-wide panic hook; retry creation.
+    Busy = 4,
 }
 
 /// C input event. `version` and `size` must exactly match this layout; `reserved` must be zero.
@@ -145,7 +147,7 @@ fn panic_status(payload: PanicPayload) -> PointerInputStatusV1 {
     PointerInputStatusV1::Panic
 }
 
-fn install_panic_hook() -> Result<(), ()> {
+fn install_panic_hook() -> Result<(), PointerInputStatusV1> {
     {
         let mut state = PANIC_HOOK_STATE
             .lock()
@@ -153,8 +155,8 @@ fn install_panic_hook() -> Result<(), ()> {
         match *state {
             HOOK_INSTALLED => return Ok(()),
             HOOK_UNINSTALLED => *state = HOOK_INSTALLING,
-            HOOK_INSTALLING => return Err(()),
-            _ => return Err(()),
+            HOOK_INSTALLING => return Err(PointerInputStatusV1::Busy),
+            _ => return Err(PointerInputStatusV1::Panic),
         }
     }
 
@@ -193,7 +195,7 @@ fn install_panic_hook() -> Result<(), ()> {
         Err(payload) => {
             *state = HOOK_UNINSTALLED;
             discard_panic_payload(payload);
-            Err(())
+            Err(PointerInputStatusV1::Panic)
         }
     }
 }
@@ -283,10 +285,9 @@ pub unsafe extern "C" fn pointer_input_engine_create_v1(
         let engine = Box::new(engine::Engine::new(engine::ScrollConfiguration::system()));
         // SAFETY: validated non-null caller storage.
         unsafe { out_engine.write(Box::into_raw(engine).cast()) };
-        Ok::<_, ()>(PointerInputStatusV1::Success)
+        Ok(PointerInputStatusV1::Success)
     })) {
-        Ok(Ok(status)) => status,
-        Ok(Err(())) => PointerInputStatusV1::Panic,
+        Ok(Ok(status) | Err(status)) => status,
         Err(payload) => panic_status(payload),
     }
 }
@@ -526,8 +527,13 @@ mod tests {
             }
         }
         let mut concurrent_owner = ptr::null_mut();
-        let concurrent_status =
-            unsafe { pointer_input_engine_create_v1(&raw mut concurrent_owner) };
+        for _ in 0..200 {
+            assert_eq!(
+                unsafe { pointer_input_engine_create_v1(&raw mut concurrent_owner) },
+                PointerInputStatusV1::Busy
+            );
+            assert!(concurrent_owner.is_null());
+        }
 
         let panic_thread = std::thread::spawn(|| {
             let _ = catch_unwind(|| panic!("unrelated test panic during installation"));
@@ -589,10 +595,8 @@ mod tests {
 
         assert_eq!(failed_startup, PointerInputStatusV1::Panic);
         assert!(failed_owner.is_null());
-        assert_eq!(reentrant_startup, Ok((PointerInputStatusV1::Panic, true)));
-        assert_eq!(concurrent_status, PointerInputStatusV1::Panic);
-        assert!(concurrent_owner.is_null());
-        assert_eq!(concurrent_hook_create, (PointerInputStatusV1::Panic, true));
+        assert_eq!(reentrant_startup, Ok((PointerInputStatusV1::Busy, true)));
+        assert_eq!(concurrent_hook_create, (PointerInputStatusV1::Busy, true));
         assert!(panic_thread_result.is_ok());
         assert_eq!(startup_status, PointerInputStatusV1::Success);
         assert_eq!(first_panic_status, PointerInputStatusV1::Panic);

@@ -14,6 +14,8 @@ extern "C" {
 #define POINTER_INPUT_STATUS_EVALUATION_FAILED_V1 UINT32_C(2)
 /* A Rust panic was contained; evaluate output remains Preserve. */
 #define POINTER_INPUT_STATUS_PANIC_V1 UINT32_C(3)
+/* Another create call is installing the process-wide panic hook; retry create only. */
+#define POINTER_INPUT_STATUS_BUSY_V1 UINT32_C(4)
 
 #define POINTER_INPUT_DECISION_PRESERVE_V1 UINT32_C(0)
 #define POINTER_INPUT_DECISION_REPLACE_V1 UINT32_C(1)
@@ -61,6 +63,7 @@ typedef struct pointer_input_decision_v1 {
  * rejected unchanged. On success it receives the uniquely owned handle; only that owner may
  * destroy the allocation with pointer_input_engine_destroy_v1. A copied non-owning handle value
  * may call set_configuration or evaluate concurrently while the owner keeps the allocation live.
+ * BUSY means only that another creator is installing the process-wide panic hook; retry create.
  */
 pointer_input_status_v1 pointer_input_engine_create_v1(void **out_engine);
 
