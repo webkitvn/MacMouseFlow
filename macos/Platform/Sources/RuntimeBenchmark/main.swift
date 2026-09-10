@@ -1,6 +1,7 @@
 import Bridge
 import CoreGraphics
 import Dispatch
+import Foundation
 @_spi(Benchmark) import Platform
 
 let count = 100_000
@@ -39,6 +40,13 @@ func report(_ name: String, samples: inout [UInt64]) -> (UInt64, UInt64, UInt64)
 }
 
 let ffi = report("abi+rustr", samples: &ffiSamples)
-_ = report("synthetic callback", samples: &callbackSamples)
-precondition(ffi.0 <= 100_000)
-print("Synthetic diagnostic only: it does not install a tap or measure lifecycle re-enable.")
+let adapter = report("synthetic adapter", samples: &callbackSamples)
+let ciMode = ProcessInfo.processInfo.environment["MMF_BENCHMARK_CI"] == "1"
+if ciMode {
+    precondition(ffi.0 <= 500_000)
+    precondition(adapter.0 <= 2_000_000)
+    print("Hosted regression thresholds passed; not reference-Mac callback/re-enable evidence.")
+} else {
+    precondition(ffi.0 <= 100_000)
+    print("Synthetic diagnostic only: it does not install a tap or measure lifecycle re-enable.")
+}

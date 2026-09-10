@@ -58,6 +58,7 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("cargo build --workspace", justfile)
         self.assertIn("ci: check test build", justfile)
         self.assertIn("macos14-behavior:", justfile)
+        self.assertIn("benchmark-ci:", justfile)
 
     def test_hooks_and_ci_route_through_canonical_commands(self):
         self.assertEqual(
@@ -77,6 +78,7 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("runs-on: macos-26", workflow)
         self.assertIn("runs-on: macos-14", workflow)
         self.assertIn("just macos14-behavior", workflow)
+        self.assertIn("just benchmark-ci", workflow)
         self.assertIn("success:success|skipped:skipped", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertNotIn("cargo test", workflow)

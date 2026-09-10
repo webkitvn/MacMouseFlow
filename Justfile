@@ -42,6 +42,10 @@ benchmark-synthetic:
     cargo build -p pointer-input-ffi --release --locked
     MMF_FFI_PROFILE=release swift run -c release --package-path macos benchmark
 
+benchmark-ci:
+    cargo build -p pointer-input-ffi --release --locked
+    MMF_FFI_PROFILE=release MMF_BENCHMARK_CI=1 swift run -c release --package-path macos benchmark
+
 smoke:
     cargo build -p pointer-input-ffi --locked
     MMF_FFI_PROFILE=debug swift run --package-path macos smoke

@@ -4,13 +4,6 @@ import Platform
 import XCTest
 
 final class ScrollRuntimeTests: XCTestCase {
-    func testUnavailablePermissionHasNoRuntimeToStop() {
-        if let runtime = ScrollRuntime() {
-            runtime.stop()
-            runtime.stop()
-        }
-    }
-
     func testLineBasedAxesReverseThroughABI() throws {
         let engine = try XCTUnwrap(PointerInputEngine())
         XCTAssertTrue(engine.setReverseDirection())

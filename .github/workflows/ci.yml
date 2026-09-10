@@ -35,6 +35,8 @@ jobs:
         run: brew install just
       - name: Verify LineBased integer-field reversal
         run: just macos14-behavior
+      - name: Run hosted release regression benchmark
+        run: just benchmark-ci
 
   ci-gate:
     if: always()

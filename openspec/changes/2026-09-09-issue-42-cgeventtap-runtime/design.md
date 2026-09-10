@@ -56,7 +56,7 @@ On `tapDisabledByTimeout` or `tapDisabledByUserInput`, invoke the single native 
 
 ### Gate minimum-target public behavior, not derived values
 
-Add the smallest public-seam check that constructs `.line` events with Core Graphics, mutates only integer Axis1/Axis2, and verifies reversed LineBased behavior through `NSEvent(cgEvent:)`. Run it in hosted CI on macOS 14. FixedPt and PointDelta may be emitted as diagnostics only; never encode incidental platform values as expected literals. The smoke harness configures reverse before enabling its tap. The canonical release benchmark requires a permitted reference-Mac real event tap and measures its callback samples, including lifecycle re-enable. A fixed mixed synthetic callback trace with atomic configuration swaps is diagnostic only and never proves the full callback budget.
+Add the smallest public-seam check that constructs `.line` events with Core Graphics, mutates only integer Axis1/Axis2, and verifies reversed LineBased behavior through `NSEvent(cgEvent:)`. Run it in hosted CI on macOS 14. FixedPt and PointDelta may be emitted as diagnostics only; never encode incidental platform values as expected literals. The smoke harness configures reverse before enabling its tap. The canonical release benchmark requires a permitted reference-Mac real event tap and measures its callback samples, including lifecycle re-enable. Hosted macOS 14 runs the fixed mixed synthetic adapter trace as a regression gate with distinct ABI+Rust p99 ≤ 500 µs and synthetic adapter p99 ≤ 2 ms ceilings. It is diagnostic only and never proves the full callback budget.
 
 ## Risks / Trade-offs
 
