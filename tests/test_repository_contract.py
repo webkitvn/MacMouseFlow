@@ -37,6 +37,7 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn('"rustfmt"', rust_toolchain)
         self.assertIn('"clippy"', rust_toolchain)
         self.assertEqual((ROOT / ".xcode-version").read_text().strip(), "26.6")
+        self.assertTrue((ROOT / "macos/Package.swift").read_text().startswith("// swift-tools-version: 5.10\n"))
 
         justfile = (ROOT / "Justfile").read_text()
         for recipe in [
