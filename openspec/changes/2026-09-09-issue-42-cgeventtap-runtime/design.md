@@ -22,7 +22,7 @@ The callback is a realtime-sensitive boundary. Swift/AppKit owns lifecycle, perm
 
 ### Use a session active-filter tap with a scroll-only normal mask
 
-Create the tap at the session location, at the head insertion point, as an active filter for `scrollWheel`. The callback branches first on lifecycle-disabled event types, then on `scrollWheel`, and preserves anything else. Tap setup/teardown and run-loop ownership remain outside the callback.
+Create the tap at the session location, at the head insertion point, as an active filter for `scrollWheel`, on one dedicated non-UI thread/run loop. The callback branches first on lifecycle-disabled event types, then on `scrollWheel`, and preserves anything else. The owner creates, enables, disables, removes, and destroys the tap on that run loop before releasing the engine.
 
 Alternative: listen-only cannot apply Replace. HID-entry tap requires broader privilege and violates the chosen topology.
 
@@ -56,7 +56,7 @@ On `tapDisabledByTimeout` or `tapDisabledByUserInput`, invoke the single native 
 
 ### Gate minimum-target public behavior, not derived values
 
-Add the smallest public-seam check that constructs `.line` events with Core Graphics, mutates only integer Axis1/Axis2, and verifies reversed LineBased behavior through `NSEvent(cgEvent:)`. Run it in hosted CI on macOS 14. FixedPt and PointDelta may be emitted as diagnostics only; never encode incidental platform values as expected literals. Keep independently justified deterministic tests for the locked `+3/-2` axis mapping and project evaluator behavior.
+Add the smallest public-seam check that constructs `.line` events with Core Graphics, mutates only integer Axis1/Axis2, and verifies reversed LineBased behavior through `NSEvent(cgEvent:)`. Run it in hosted CI on macOS 14. FixedPt and PointDelta may be emitted as diagnostics only; never encode incidental platform values as expected literals. The smoke harness configures reverse before enabling its tap. The release benchmark drives the same callback dispatch body with a fixed mixed trace and atomic configuration swaps.
 
 ## Risks / Trade-offs
 

@@ -25,7 +25,7 @@ test:
     cargo build -p pointer-input-ffi --locked
     cc -std=c11 -Wall -Wextra -Werror -Irust/ffi/include rust/ffi/tests/abi_contract.c -Ltarget/debug -lpointer_input_ffi -Wl,-rpath,"$PWD/target/debug" -o target/abi_contract
     target/abi_contract
-    swift test --package-path macos
+    MMF_FFI_PROFILE=debug swift test --package-path macos
 
 ci: check test build
 
@@ -35,16 +35,16 @@ hooks-install:
     @echo "Installed repository hooks from .githooks"
 
 benchmark:
-    cargo build -p pointer-input-ffi --locked
-    swift run --package-path macos benchmark
+    cargo build -p pointer-input-ffi --release --locked
+    MMF_FFI_PROFILE=release swift run -c release --package-path macos benchmark
 
 smoke:
     cargo build -p pointer-input-ffi --locked
-    swift run --package-path macos smoke
+    MMF_FFI_PROFILE=debug swift run --package-path macos smoke
 
 macos14-behavior:
-    cargo build -p pointer-input-ffi --locked
-    swift run --package-path macos coherence-check
+    cargo build -p pointer-input-ffi --release --locked
+    MMF_FFI_PROFILE=release swift run --package-path macos coherence-check
 
 trace-tail:
     @echo "NOT READY: structured runtime trace capability belongs to the observability execution slice" >&2

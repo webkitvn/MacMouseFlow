@@ -1,6 +1,8 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+let ffiProfile = Context.environment["MMF_FFI_PROFILE"] ?? "debug"
+
 let package = Package(
     name: "MacMouseFlow",
     platforms: [.macOS(.v14)],
@@ -16,7 +18,7 @@ let package = Package(
             name: "Bridge",
             dependencies: ["CPointerInput"],
             path: "Bridge/Sources/Bridge",
-            linkerSettings: [.unsafeFlags(["-L../target/debug", "-lpointer_input_ffi"])]
+            linkerSettings: [.unsafeFlags(["-L../target/\(ffiProfile)", "-lpointer_input_ffi"])]
         ),
         .target(name: "Platform", dependencies: ["Bridge"], path: "Platform/Sources/Platform"),
         .executableTarget(name: "App", dependencies: ["Platform"], path: "App/Sources/App"),

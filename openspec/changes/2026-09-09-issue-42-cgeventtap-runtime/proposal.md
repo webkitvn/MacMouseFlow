@@ -4,12 +4,12 @@ Issue #42 must materialize the native macOS input path that connects the establi
 
 ## What Changes
 
-- Add a macOS session event-tap runtime with explicit permission, creation, enablement, disablement, and teardown behavior.
+- Add a macOS session event-tap runtime on a dedicated non-UI run loop/thread with explicit permission, creation, enablement, disablement, and teardown behavior.
 - Translate LineBased native scroll events from integer Axis1/Axis2 fields into vertical/horizontal signed line steps with `source_class=Unknown`, invoke the Rust engine through the existing ABI, and apply successful decisions to the native event.
 - On Replace, write only the canonical integer line fields. Never explicitly write FixedPt or PointDelta; Core Graphics owns any derived native representation changes.
 - Preserve the original event for unexpected input, pixel-based scroll, unavailable permission, tap failure, ABI/engine failure, panic status, or processing fault.
 - Re-enable the tap after system timeout/user-input disable notifications without performing UI, disk/network I/O, synchronous logging, config parsing, or unbounded blocking/locking in the callback.
-- Add deterministic tests through the native adapter boundary plus canonical live smoke and reference-Mac latency evidence.
+- Add deterministic tests through the native adapter boundary plus reverse-configured canonical live smoke and release-build reference-Mac callback latency evidence.
 
 ## Capabilities
 
