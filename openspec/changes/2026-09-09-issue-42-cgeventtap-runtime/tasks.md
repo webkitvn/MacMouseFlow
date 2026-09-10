@@ -16,7 +16,7 @@
 
 ## 4. Acceptance evidence
 
-- [ ] 4.1 Add and run the public-API LineBased behavior check using only integer DeltaAxis1/2 setters; verify reversed behavior through `NSEvent(cgEvent:)` on hosted macOS 14 without asserting exact FixedPt/PointDelta values, or STOP if integer setters are insufficient and a project-owned conversion would be required.
+- [x] 4.1 Add and run the public-API LineBased behavior check using only integer DeltaAxis1/2 setters; verify reversed behavior through `NSEvent(cgEvent:)` on hosted macOS 14 without asserting exact FixedPt/PointDelta values, or STOP if integer setters are insufficient and a project-owned conversion would be required. Hosted macOS 14 evidence passed at a776dd2.
 - [ ] 4.2 Replace the Issue #42 `just smoke` and `just benchmark` placeholders with the minimum canonical runners, add the macOS 14 deterministic behavior CI gate, and verify `just check`, `just test`, `just ci`, and `openspec validate --all --no-interactive` pass locally. The canonical benchmark remains NOT_PROVEN until the approved permitted reference-Mac event-tap harness exists and runs; synthetic timing is diagnostic only.
 - [ ] 4.3 Run `just smoke` and `just benchmark` on the reference Mac across 100,000 events; record LineBased replacement, PixelBased preservation, zero `tapDisabledByTimeout`, p99 ≤ 500 µs, p99.9 ≤ 1 ms, and max ≤ 2 ms, otherwise leave strict acceptance `NOT_PROVEN`.
 - [ ] 4.4 Map every Issue #42 acceptance criterion to concrete evidence, post the verified handoff to the Issue, and archive only after OpenSpec validation, coherence evidence, deterministic tests, live smoke, and reference-Mac benchmark all pass.

@@ -37,7 +37,13 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn('"rustfmt"', rust_toolchain)
         self.assertIn('"clippy"', rust_toolchain)
         self.assertEqual((ROOT / ".xcode-version").read_text().strip(), "26.6")
-        self.assertTrue((ROOT / "macos/Package.swift").read_text().startswith("// swift-tools-version: 5.10\n"))
+        package = (ROOT / "macos/Package.swift").read_text()
+        self.assertTrue(package.startswith("// swift-tools-version: 5.10\n"))
+        self.assertIn("#if compiler(>=6.0)", package)
+        self.assertIn('let preferredSwiftSettings: [SwiftSetting] = [.unsafeFlags(["-swift-version", "6"])]', package)
+        for target in ["Bridge", "Platform", "App", "CoherenceCheck", "Smoke", "Benchmark", "PlatformTests"]:
+            self.assertIn(f'name: "{target}"', package)
+        self.assertEqual(package.count("swiftSettings: preferredSwiftSettings"), 7)
 
         justfile = (ROOT / "Justfile").read_text()
         for recipe in [

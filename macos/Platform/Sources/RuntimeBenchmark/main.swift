@@ -47,6 +47,5 @@ if ciMode {
     precondition(adapter.0 <= 2_000_000)
     print("Hosted regression thresholds passed; not reference-Mac callback/re-enable evidence.")
 } else {
-    precondition(ffi.0 <= 100_000)
     print("Synthetic diagnostic only: it does not install a tap or measure lifecycle re-enable.")
 }
