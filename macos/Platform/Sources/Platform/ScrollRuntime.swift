@@ -18,51 +18,58 @@ public enum ScrollAdapter {
     }
 }
 
-private final class TapState: @unchecked Sendable {
-    // The lock publishes lifecycle state only. The callback never takes it.
+final class TapState: @unchecked Sendable {
+    // This lock serializes public lifecycle calls only. The callback never takes it.
     private let lock = NSLock()
     let engine: PointerInputEngine
+    private let installsTap: Bool
     let ready = DispatchSemaphore(value: 0)
     let stopped = DispatchSemaphore(value: 0)
-    private var threadStarted = false
-    private var cancelled = false
-    private var completed = false
+    private var lifecycle = Lifecycle.idle
     private var runLoop: CFRunLoop?
     private var timeoutCount = 0
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
 
-    init(engine: PointerInputEngine) { self.engine = engine }
+    private enum Lifecycle { case idle, starting, running, cancelling, finished }
 
-    func markThreadStarted() {
+    init(engine: PointerInputEngine, installsTap: Bool = true) {
+        self.engine = engine
+        self.installsTap = installsTap
+    }
+
+    func begin() -> Bool {
         lock.lock()
-        threadStarted = true
-        lock.unlock()
+        defer { lock.unlock() }
+        guard lifecycle == .idle else { return false }
+        lifecycle = .starting
+        return true
     }
 
     func run() {
         let runLoop = CFRunLoopGetCurrent()
-        let mask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: ScrollRuntime.callback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else {
-            ready.signal()
-            complete()
-            return
+        var enabled = !installsTap
+        if installsTap {
+            let mask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
+            if let tap = CGEvent.tapCreate(
+                tap: .cgSessionEventTap,
+                place: .headInsertEventTap,
+                options: .defaultTap,
+                eventsOfInterest: mask,
+                callback: ScrollRuntime.callback,
+                userInfo: Unmanaged.passUnretained(self).toOpaque()
+            ) {
+                let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+                self.tap = tap
+                self.source = source
+                CFRunLoopAddSource(runLoop, source, .commonModes)
+                CGEvent.tapEnable(tap: tap, enable: true)
+                enabled = CGEvent.tapIsEnabled(tap: tap)
+            }
         }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        self.tap = tap
-        self.source = source
-        CFRunLoopAddSource(runLoop, source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-
         lock.lock()
-        let shouldRun = !cancelled && CGEvent.tapIsEnabled(tap: tap)
+        let shouldRun = lifecycle == .starting && enabled
+        lifecycle = shouldRun ? .running : .cancelling
         self.runLoop = shouldRun ? runLoop : nil
         lock.unlock()
         ready.signal()
@@ -71,7 +78,11 @@ private final class TapState: @unchecked Sendable {
             complete()
             return
         }
-        CFRunLoopRun()
+        if installsTap {
+            CFRunLoopRun()
+        } else {
+            while awaitReady() { Thread.sleep(forTimeInterval: 0.001) }
+        }
         finishOnOwnerRunLoop()
         complete()
     }
@@ -79,21 +90,24 @@ private final class TapState: @unchecked Sendable {
     func cancelAndRunLoop() -> (join: Bool, runLoop: CFRunLoop?) {
         lock.lock()
         defer { lock.unlock() }
-        guard threadStarted, !completed else { return (false, nil) }
-        cancelled = true
+        switch lifecycle {
+        case .idle, .finished: return (false, nil)
+        case .starting, .running: lifecycle = .cancelling
+        case .cancelling: break
+        }
         return (true, runLoop)
     }
 
-    func startSucceeded() -> Bool {
+    func awaitReady() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return runLoop != nil && !completed
+        return lifecycle == .running
     }
 
     func completedTimeoutCount() -> Int {
         lock.lock()
         defer { lock.unlock() }
-        precondition(completed)
+        precondition(lifecycle == .finished)
         return timeoutCount
     }
 
@@ -110,23 +124,34 @@ private final class TapState: @unchecked Sendable {
     func disabledByTimeout() { timeoutCount += 1 }
     func reenable() { if let tap { CGEvent.tapEnable(tap: tap, enable: true) } }
 
-    private func complete() {
+    func complete() {
         lock.lock()
-        guard !completed else {
+        guard lifecycle != .finished else {
             lock.unlock()
             return
         }
-        completed = true
+        lifecycle = .finished
         runLoop = nil
         lock.unlock()
         stopped.signal()
     }
 }
 
+@_spi(Benchmark) public final class CallbackHarness {
+    private let state: TapState
+
+    @_spi(Benchmark) public init(engine: PointerInputEngine) { state = TapState(engine: engine) }
+
+    @_spi(Benchmark) public func invoke(_ type: CGEventType, event: CGEvent) {
+        _ = ScrollRuntime.callback(OpaquePointer(bitPattern: 0x1)!, type, event, Unmanaged.passUnretained(state).toOpaque())
+    }
+}
+
 public final class ScrollRuntime {
     private let state: TapState
     private let thread: Thread
-    private var stopJoined = false
+    private let coordinatorLock = NSLock()
+    private var joined = false
 
     public init?(reverseForHarness: Bool = false) {
         guard AXIsProcessTrusted(), let engine = PointerInputEngine() else { return nil }
@@ -137,24 +162,37 @@ public final class ScrollRuntime {
         thread.name = "MacMouseFlow CGEventTap"
     }
 
-    public func start() -> Bool {
-        guard !thread.isExecuting, !stopJoined else { return false }
-        state.markThreadStarted()
-        thread.start()
-        guard state.ready.wait(timeout: .now() + 1) == .success else {
-            _ = stop()
-            return false
-        }
-        return state.startSucceeded()
+    init?(testingWithoutTap engine: PointerInputEngine) {
+        let state = TapState(engine: engine, installsTap: false)
+        self.state = state
+        thread = Thread { state.run() }
+        thread.name = "MacMouseFlow CGEventTap test"
     }
 
-    @discardableResult
-    public func stop() -> Bool {
-        guard !stopJoined else { return true }
+    public func start() -> Bool {
+        coordinatorLock.lock()
+        defer { coordinatorLock.unlock() }
+        guard !joined, state.begin() else { return false }
+        thread.start()
+        guard state.ready.wait(timeout: .now() + 1) == .success else {
+            stopLocked()
+            return false
+        }
+        return state.awaitReady()
+    }
+
+    public func stop() {
+        coordinatorLock.lock()
+        defer { coordinatorLock.unlock() }
+        stopLocked()
+    }
+
+    private func stopLocked() {
+        guard !joined else { return }
         let request = state.cancelAndRunLoop()
         guard request.join else {
-            stopJoined = true
-            return true
+            joined = true
+            return
         }
         if let runLoop = request.runLoop {
             CFRunLoopPerformBlock(runLoop, CFRunLoopMode.defaultMode.rawValue as NSString) {
@@ -163,23 +201,16 @@ public final class ScrollRuntime {
             }
             CFRunLoopWakeUp(runLoop)
         }
-        // This is outside the callback; destruction cannot proceed while the owner thread runs.
         _ = state.stopped.wait(timeout: .distantFuture)
-        stopJoined = true
-        return true
+        joined = true
     }
 
     public var disabledByTimeoutCount: Int {
-        precondition(stopJoined)
+        precondition(joined)
         return state.completedTimeoutCount()
     }
 
-    deinit { _ = stop() }
-
-    public static func dispatch(_ type: CGEventType, event: CGEvent, engine: PointerInputEngine) {
-        guard type != .tapDisabledByTimeout, type != .tapDisabledByUserInput else { return }
-        ScrollAdapter.process(event, engine: engine)
-    }
+    deinit { stop() }
 
     fileprivate static let callback: CGEventTapCallBack = { _, type, event, info in
         guard let info else { return Unmanaged.passUnretained(event) }
@@ -188,7 +219,7 @@ public final class ScrollRuntime {
             if type == .tapDisabledByTimeout { state.disabledByTimeout() }
             state.reenable()
         } else {
-            dispatch(type, event: event, engine: state.engine)
+            ScrollAdapter.process(event, engine: state.engine)
         }
         return Unmanaged.passUnretained(event)
     }

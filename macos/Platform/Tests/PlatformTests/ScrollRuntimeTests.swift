@@ -6,8 +6,8 @@ import XCTest
 final class ScrollRuntimeTests: XCTestCase {
     func testUnavailablePermissionHasNoRuntimeToStop() {
         if let runtime = ScrollRuntime() {
-            XCTAssertTrue(runtime.stop())
-            XCTAssertTrue(runtime.stop())
+            runtime.stop()
+            runtime.stop()
         }
     }
 
