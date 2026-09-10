@@ -48,7 +48,7 @@ Alternative: reconstructing an event risks losing timestamp, flags, source, and 
 
 ### Retain engine ownership across callback delivery
 
-Create the engine and install configuration before enabling the tap. The runtime owner retains the opaque handle for the full period in which callback delivery is possible, disables/removes the tap before destruction, and never destroys concurrently with evaluation. Only ABI Busy during startup follows its existing bounded retry contract; callback evaluation does not retry.
+Create the engine and install configuration before enabling the tap. The runtime owner retains the opaque handle for the full period in which callback delivery is possible, disables, removes, invalidates, and destroys the tap before engine destruction, and never destroys concurrently with evaluation. This one-shot startup treats ABI Busy or any non-success creation status as startup failure and leaves input unaffected; a later caller may attempt creation again. Callback evaluation does not retry.
 
 ### Keep lifecycle recovery bounded
 

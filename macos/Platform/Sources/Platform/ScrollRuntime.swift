@@ -105,8 +105,9 @@ final class TapState: @unchecked Sendable {
     func finishOnOwnerRunLoop() {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes) }
-        tap = nil
+        if let tap { CFMachPortInvalidate(tap) }
         source = nil
+        tap = nil
         lock.lock()
         runLoop = nil
         lock.unlock()
