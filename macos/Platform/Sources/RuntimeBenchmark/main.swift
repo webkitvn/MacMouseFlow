@@ -17,7 +17,7 @@ var callbackSamples = [UInt64](repeating: 0, count: count)
 for index in trace.indices {
     if index.isMultiple(of: 100) { precondition(engine.setSystemDirection()) }
     if index % 100 == 50 { precondition(engine.setReverseDirection()) }
-    let type: CGEventType = index.isMultiple(of: 1_000) ? .tapDisabledByTimeout : (index.isMultiple(of: 500) ? .tapDisabledByUserInput : trace[index].0)
+    let type = trace[index].0
     let event = trace[index].1
     let horizontal = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
     let vertical = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
@@ -39,12 +39,6 @@ func report(_ name: String, samples: inout [UInt64]) -> (UInt64, UInt64, UInt64)
 }
 
 let ffi = report("abi+rustr", samples: &ffiSamples)
-let callbackMetrics = report("callback", samples: &callbackSamples)
-guard ffi.0 <= 100_000,
-      callbackMetrics.0 <= 500_000,
-      callbackMetrics.1 <= 1_000_000,
-      callbackMetrics.2 <= 2_000_000
-else {
-    fputs("benchmark threshold failed; this host is not reference-Mac evidence\n", stderr)
-    exit(1)
-}
+_ = report("synthetic callback", samples: &callbackSamples)
+precondition(ffi.0 <= 100_000)
+print("Synthetic diagnostic only: it does not install a tap or measure lifecycle re-enable.")

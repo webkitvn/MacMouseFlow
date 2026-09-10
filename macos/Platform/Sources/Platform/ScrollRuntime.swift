@@ -22,7 +22,6 @@ final class TapState: @unchecked Sendable {
     // This lock serializes public lifecycle calls only. The callback never takes it.
     private let lock = NSLock()
     let engine: PointerInputEngine
-    private let installsTap: Bool
     let ready = DispatchSemaphore(value: 0)
     let stopped = DispatchSemaphore(value: 0)
     private var lifecycle = Lifecycle.idle
@@ -33,10 +32,7 @@ final class TapState: @unchecked Sendable {
 
     private enum Lifecycle { case idle, starting, running, cancelling, finished }
 
-    init(engine: PointerInputEngine, installsTap: Bool = true) {
-        self.engine = engine
-        self.installsTap = installsTap
-    }
+    init(engine: PointerInputEngine) { self.engine = engine }
 
     func begin() -> Bool {
         lock.lock()
@@ -48,27 +44,26 @@ final class TapState: @unchecked Sendable {
 
     func run() {
         let runLoop = CFRunLoopGetCurrent()
-        var enabled = !installsTap
-        if installsTap {
-            let mask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
-            if let tap = CGEvent.tapCreate(
-                tap: .cgSessionEventTap,
-                place: .headInsertEventTap,
-                options: .defaultTap,
-                eventsOfInterest: mask,
-                callback: ScrollRuntime.callback,
-                userInfo: Unmanaged.passUnretained(self).toOpaque()
-            ) {
-                let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-                self.tap = tap
-                self.source = source
-                CFRunLoopAddSource(runLoop, source, .commonModes)
-                CGEvent.tapEnable(tap: tap, enable: true)
-                enabled = CGEvent.tapIsEnabled(tap: tap)
-            }
+        let mask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: ScrollRuntime.callback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            ready.signal()
+            complete()
+            return
         }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        self.tap = tap
+        self.source = source
+        CFRunLoopAddSource(runLoop, source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
         lock.lock()
-        let shouldRun = lifecycle == .starting && enabled
+        let shouldRun = lifecycle == .starting && CGEvent.tapIsEnabled(tap: tap)
         lifecycle = shouldRun ? .running : .cancelling
         self.runLoop = shouldRun ? runLoop : nil
         lock.unlock()
@@ -78,11 +73,7 @@ final class TapState: @unchecked Sendable {
             complete()
             return
         }
-        if installsTap {
-            CFRunLoopRun()
-        } else {
-            while awaitReady() { Thread.sleep(forTimeInterval: 0.001) }
-        }
+        CFRunLoopRun()
         finishOnOwnerRunLoop()
         complete()
     }
@@ -160,13 +151,6 @@ public final class ScrollRuntime {
         self.state = state
         thread = Thread { state.run() }
         thread.name = "MacMouseFlow CGEventTap"
-    }
-
-    init?(testingWithoutTap engine: PointerInputEngine) {
-        let state = TapState(engine: engine, installsTap: false)
-        self.state = state
-        thread = Thread { state.run() }
-        thread.name = "MacMouseFlow CGEventTap test"
     }
 
     public func start() -> Bool {

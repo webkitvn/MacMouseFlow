@@ -9,7 +9,7 @@ Issue #42 must materialize the native macOS input path that connects the establi
 - On Replace, write only the canonical integer line fields. Never explicitly write FixedPt or PointDelta; Core Graphics owns any derived native representation changes.
 - Preserve the original event for unexpected input, pixel-based scroll, unavailable permission, tap failure, ABI/engine failure, panic status, or processing fault.
 - Re-enable the tap after system timeout/user-input disable notifications without performing UI, disk/network I/O, synchronous logging, config parsing, or unbounded blocking/locking in the callback.
-- Add deterministic tests through the native adapter boundary plus reverse-configured canonical live smoke and release-build reference-Mac callback latency evidence.
+- Add deterministic tests through the native adapter boundary, reverse-configured canonical live smoke, and release-build reference-Mac real-event-tap callback latency evidence; synthetic timing is diagnostic only.
 
 ## Capabilities
 
