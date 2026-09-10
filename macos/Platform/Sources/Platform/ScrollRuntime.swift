@@ -57,7 +57,13 @@ final class TapState: @unchecked Sendable {
             complete()
             return
         }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            ready.signal()
+            complete()
+            return
+        }
         self.tap = tap
         self.source = source
         CFRunLoopAddSource(runLoop, source, .commonModes)

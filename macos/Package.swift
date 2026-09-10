@@ -2,11 +2,6 @@
 import PackageDescription
 
 let ffiProfile = Context.environment["MMF_FFI_PROFILE"] ?? "debug"
-#if compiler(>=6.0)
-let preferredSwiftSettings: [SwiftSetting] = [.unsafeFlags(["-swift-version", "6"])]
-#else
-let preferredSwiftSettings: [SwiftSetting] = []
-#endif
 
 let package = Package(
     name: "MacMouseFlow",
@@ -23,14 +18,14 @@ let package = Package(
             name: "Bridge",
             dependencies: ["CPointerInput"],
             path: "Bridge/Sources/Bridge",
-            swiftSettings: preferredSwiftSettings,
             linkerSettings: [.unsafeFlags(["-L../target/\(ffiProfile)", "-lpointer_input_ffi"])]
         ),
-        .target(name: "Platform", dependencies: ["Bridge"], path: "Platform/Sources/Platform", swiftSettings: preferredSwiftSettings),
-        .executableTarget(name: "App", dependencies: ["Platform"], path: "App/Sources/App", swiftSettings: preferredSwiftSettings),
-        .executableTarget(name: "CoherenceCheck", dependencies: ["Platform", "Bridge"], path: "Platform/Sources/CoherenceProbe", swiftSettings: preferredSwiftSettings),
-        .executableTarget(name: "Smoke", dependencies: ["Platform"], path: "Platform/Sources/RuntimeSmoke", swiftSettings: preferredSwiftSettings),
-        .executableTarget(name: "Benchmark", dependencies: ["Platform", "Bridge"], path: "Platform/Sources/RuntimeBenchmark", swiftSettings: preferredSwiftSettings),
-        .testTarget(name: "PlatformTests", dependencies: ["Platform"], path: "Platform/Tests/PlatformTests", swiftSettings: preferredSwiftSettings),
-    ]
+        .target(name: "Platform", dependencies: ["Bridge"], path: "Platform/Sources/Platform"),
+        .executableTarget(name: "App", dependencies: ["Platform"], path: "App/Sources/App"),
+        .executableTarget(name: "CoherenceCheck", dependencies: ["Platform", "Bridge"], path: "Platform/Sources/CoherenceProbe"),
+        .executableTarget(name: "Smoke", dependencies: ["Platform"], path: "Platform/Sources/RuntimeSmoke"),
+        .executableTarget(name: "Benchmark", dependencies: ["Platform", "Bridge"], path: "Platform/Sources/RuntimeBenchmark"),
+        .testTarget(name: "PlatformTests", dependencies: ["Platform"], path: "Platform/Tests/PlatformTests"),
+    ],
+    swiftLanguageVersions: [.version("6"), .v5]
 )

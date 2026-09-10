@@ -39,11 +39,10 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual((ROOT / ".xcode-version").read_text().strip(), "26.6")
         package = (ROOT / "macos/Package.swift").read_text()
         self.assertTrue(package.startswith("// swift-tools-version: 5.10\n"))
-        self.assertIn("#if compiler(>=6.0)", package)
-        self.assertIn('let preferredSwiftSettings: [SwiftSetting] = [.unsafeFlags(["-swift-version", "6"])]', package)
-        for target in ["Bridge", "Platform", "App", "CoherenceCheck", "Smoke", "Benchmark", "PlatformTests"]:
-            self.assertIn(f'name: "{target}"', package)
-        self.assertEqual(package.count("swiftSettings: preferredSwiftSettings"), 7)
+        self.assertIn('swiftLanguageVersions: [.version("6"), .v5]', package)
+        self.assertNotIn("preferredSwiftSettings", package)
+        self.assertNotIn("swiftSettings:", package)
+        self.assertNotIn("#if compiler", package)
 
         justfile = (ROOT / "Justfile").read_text()
         for recipe in [
