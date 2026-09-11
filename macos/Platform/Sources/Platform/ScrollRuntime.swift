@@ -143,6 +143,10 @@ final class TapState: @unchecked Sendable {
     @_spi(Benchmark) public func invoke(_ type: CGEventType, event: CGEvent) {
         _ = ScrollRuntime.callback(OpaquePointer(bitPattern: 0x1)!, type, event, Unmanaged.passUnretained(state).toOpaque())
     }
+
+    @_spi(Benchmark) public func setReverse(_ reverse: Bool) -> Bool {
+        reverse ? state.engine.setReverseDirection() : state.engine.setSystemDirection()
+    }
 }
 
 public final class ScrollRuntime {

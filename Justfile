@@ -35,12 +35,12 @@ hooks-install:
     @echo "Installed repository hooks from .githooks"
 
 benchmark:
-    @echo "NOT_PROVEN: full callback benchmark requires the approved permitted reference-Mac event-tap harness" >&2
-    @exit 2
+    cargo build -p pointer-input-ffi --release --locked
+    MMF_FFI_PROFILE=release swift run -c release --package-path macos benchmark
 
 benchmark-synthetic:
     cargo build -p pointer-input-ffi --release --locked
-    MMF_FFI_PROFILE=release swift run -c release --package-path macos benchmark
+    MMF_FFI_PROFILE=release MMF_BENCHMARK_SYNTHETIC=1 swift run -c release --package-path macos benchmark
 
 benchmark-ci:
     cargo build -p pointer-input-ffi --release --locked
