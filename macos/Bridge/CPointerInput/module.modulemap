@@ -1,0 +1,4 @@
+module CPointerInput [system] {
+    header "../../../rust/ffi/include/pointer_input_ffi.h"
+    export *
+}

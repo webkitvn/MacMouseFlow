@@ -37,6 +37,12 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn('"rustfmt"', rust_toolchain)
         self.assertIn('"clippy"', rust_toolchain)
         self.assertEqual((ROOT / ".xcode-version").read_text().strip(), "26.6")
+        package = (ROOT / "macos/Package.swift").read_text()
+        self.assertTrue(package.startswith("// swift-tools-version: 5.10\n"))
+        self.assertIn('swiftLanguageVersions: [.version("6"), .v5]', package)
+        self.assertNotIn("preferredSwiftSettings", package)
+        self.assertNotIn("swiftSettings:", package)
+        self.assertNotIn("#if compiler", package)
 
         justfile = (ROOT / "Justfile").read_text()
         for recipe in [
@@ -57,6 +63,8 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("python3 scripts/verify_toolchain.py", justfile)
         self.assertIn("cargo build --workspace", justfile)
         self.assertIn("ci: check test build", justfile)
+        self.assertIn("macos14-behavior:", justfile)
+        self.assertIn("benchmark-ci:", justfile)
 
     def test_hooks_and_ci_route_through_canonical_commands(self):
         self.assertEqual(
@@ -74,6 +82,10 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("just ci", workflow)
         self.assertIn("ci-gate", workflow)
         self.assertIn("runs-on: macos-26", workflow)
+        self.assertIn("runs-on: macos-14", workflow)
+        self.assertIn("just macos14-behavior", workflow)
+        self.assertIn("just benchmark-ci", workflow)
+        self.assertIn("success:success|skipped:skipped", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertNotIn("cargo test", workflow)
         self.assertNotIn("cargo clippy", workflow)
