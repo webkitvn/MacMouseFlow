@@ -60,6 +60,69 @@ def rollback_app_path() -> Path:
     return local_ship_dir() / "rollback" / APP_NAME
 
 
+# The single, pipeline-owned, documented path for the bounded terminal recovery
+# bundle (design.md: "Bounded terminal recovery bundle on double filesystem
+# failure"; lead decision, Issue #41). Populated only on a true double filesystem
+# failure during a directory swap -- the commit move fails AND the automatic
+# restoration move also fails -- and removed automatically by the next successful
+# lifecycle action. This is not a second rollback slot or version history.
+def terminal_recovery_path() -> Path:
+    return local_ship_dir() / "terminal-recovery" / APP_NAME
+
+
+# Other transient staging/backup slots used mid-operation by `install`/`rollback`;
+# always disposable and normally cleaned up within the same call, but swept
+# defensively (along with `terminal_recovery_path()`) on the next successful
+# lifecycle action in case a prior call was interrupted before it could clean up.
+_TRANSIENT_SLOT_SUFFIXES = (
+    "rollback-staging",
+    "rollback-backup",
+    "rollback-incoming",
+    "rollback-old",
+    "rollback-restore-staging",
+    "rollback-restore-backup",
+)
+
+
+@dataclass
+class CleanupResult:
+    ok: bool
+    reason: str = ""
+
+
+def _clear_pipeline_temp_state() -> CleanupResult:
+    """Remove any leftover transient slot and verify the bounded terminal recovery
+    bundle is actually gone.
+
+    Called only once a lifecycle action is about to report success, so the terminal
+    recovery bundle never persists past the next successful lifecycle action. The
+    transient staging/backup slots are always-disposable mid-operation scratch space
+    and are cleared best-effort. The terminal recovery bundle is different: it is the
+    one documented, reported exception this pipeline makes to "exactly one rollback
+    bundle" (design.md: "Bounded terminal recovery bundle on double filesystem
+    failure"), so its removal is verified rather than assumed. A caller MUST NOT
+    report unqualified lifecycle success while this reports failure.
+    """
+    for parent in (active_app_path().parent, rollback_app_path().parent):
+        for suffix in _TRANSIENT_SLOT_SUFFIXES:
+            candidate = parent / f".{APP_NAME}.{suffix}"
+            if candidate.exists():
+                shutil.rmtree(candidate, ignore_errors=True)
+
+    recovery = terminal_recovery_path()
+    recovery_root = recovery.parent
+    if recovery_root.exists():
+        shutil.rmtree(recovery_root, ignore_errors=True)
+    if recovery.exists() or recovery_root.exists():
+        return CleanupResult(
+            False,
+            f"the terminal recovery bundle at {recovery} could not be removed after a successful "
+            f"lifecycle action; it remains on disk and must be treated as still-present recovery "
+            f"state, not silently cleared",
+        )
+    return CleanupResult(True)
+
+
 # Real runtime configuration is native-owned (ADR 0004) and outside this pipeline's
 # control; the pipeline only ever reads existence/length/hash, never contents.
 def config_path() -> Path:
@@ -351,11 +414,79 @@ class LifecycleResult:
     reason: str = ""
     config_before: Optional[dict] = None
     config_after: Optional[dict] = None
-    # Set only when a rollback double-failure (commit move AND automatic
-    # restoration move both fail) leaves the backup as the sole recoverable copy
-    # of the prior active bundle. Callers must treat its presence as "active is
-    # NOT confirmed preserved; recover manually from this path."
-    preserved_backup_path: Optional[str] = None
+    # Set only when a true double filesystem failure (commit move AND automatic
+    # restoration move both fail) leaves the canonical target genuinely missing and
+    # the bundle that would otherwise be destroyed has been relocated to the bounded
+    # terminal recovery bundle path (`terminal_recovery_path()`). Callers must treat
+    # its presence as "the canonical target is NOT confirmed preserved; recover
+    # manually from this path." This is never a second rollback slot: the recovery
+    # bundle is removed automatically by the next successful lifecycle action.
+    preserved_recovery_path: Optional[str] = None
+
+
+@dataclass
+class ReplaceResult:
+    ok: bool
+    reason: str = ""
+    preserved_recovery_path: Optional[str] = None
+
+
+def _replace_directory_content(source: Path, target: Path, backup: Path) -> ReplaceResult:
+    """Replace `target`'s content with `source`'s content without ever deleting a
+    pre-existing `target` before the replacement is confirmed safely swapped in.
+
+    `target`, if present, is moved aside to `backup` first (never deleted outright);
+    `source` is then moved into `target`'s place. This function does not delete
+    `backup` (or a leftover `source`) on success -- callers own that cleanup, since
+    some callers need `backup` to remain available until a further post-condition
+    (e.g. a launch probe) passes before it is safe to discard.
+
+    If moving `source` into `target` fails, an automatic restoration
+    (`backup` -> `target`) is attempted. If that restoration also fails, `target` is
+    genuinely missing right now: this is a true double filesystem failure
+    (design.md: "Bounded terminal recovery bundle on double filesystem failure").
+    The content that would otherwise be destroyed is relocated to the single,
+    documented `terminal_recovery_path()` -- never left at the ad hoc `backup` path
+    and never silently deleted. Callers MUST NOT report `target` as preserved when
+    `preserved_recovery_path` is set.
+    """
+    target_existed = target.exists()
+    try:
+        if backup.exists():
+            shutil.rmtree(backup)
+        if target_existed:
+            shutil.move(str(target), str(backup))
+        shutil.move(str(source), str(target))
+    except OSError as commit_exc:
+        if target_existed and not target.exists() and backup.exists():
+            try:
+                shutil.move(str(backup), str(target))
+            except OSError as restore_exc:
+                recovery = terminal_recovery_path()
+                try:
+                    recovery.parent.mkdir(parents=True, exist_ok=True)
+                    if recovery.exists():
+                        shutil.rmtree(recovery)
+                    shutil.move(str(backup), str(recovery))
+                    recovery_path = str(recovery)
+                except OSError:
+                    # Even relocating to the documented recovery path failed; the
+                    # content is still safe at `backup` itself, so report that path
+                    # instead of silently losing it.
+                    recovery_path = str(backup)
+                return ReplaceResult(
+                    False,
+                    f"commit failed ({commit_exc}) and automatic restoration also failed "
+                    f"({restore_exc}); {target} is MISSING, not preserved; the prior known-good "
+                    f"bundle is intentionally left at {recovery_path} for manual recovery",
+                    recovery_path,
+                )
+            return ReplaceResult(
+                False,
+                f"commit failed ({commit_exc}); automatically restored {target} from the backup copy",
+            )
+        return ReplaceResult(False, str(commit_exc))
+    return ReplaceResult(True)
 
 
 def install(candidate: Path) -> LifecycleResult:
@@ -414,29 +545,58 @@ def install(candidate: Path) -> LifecycleResult:
                 asdict(config_after),
             )
 
-    # Retain known-good: move the current active bundle into the rollback slot
-    # *before* the canonical active path is mutated, so a failure below always has
-    # something correct to restore.
+    # Retain known-good: promote a *copy* of the current active bundle into the
+    # rollback slot before the canonical active path is mutated, so a failure below
+    # always has something correct to restore. The real active bundle is only ever
+    # copied from here, never moved or deleted, until the rollback slot promotion is
+    # confirmed to have committed (never delete the existing rollback bundle before
+    # its replacement is safely staged and promoted).
     moved_prior_active = False
     if had_active:
+        incoming_rb = rb.parent / f".{APP_NAME}.rollback-incoming"
+        old_rb_backup = rb.parent / f".{APP_NAME}.rollback-old"
         try:
             rb.parent.mkdir(parents=True, exist_ok=True)
-            if rb.exists():
-                shutil.rmtree(rb)
-            shutil.move(str(active), str(rb))
-            moved_prior_active = True
+            if incoming_rb.exists():
+                shutil.rmtree(incoming_rb)
+            shutil.copytree(active, incoming_rb)
         except OSError as exc:
+            shutil.rmtree(incoming_rb, ignore_errors=True)
             config_after = capture_config_evidence()
             assert_config_unchanged(config_before, config_after)
             return LifecycleResult(
                 "install",
                 False,
-                f"filesystem error retaining known-good bundle, active left untouched: {exc}",
+                f"filesystem error staging known-good bundle for retention, active and existing "
+                f"rollback bundle left untouched: {exc}",
                 asdict(config_before),
                 asdict(config_after),
             )
 
+        replace_result = _replace_directory_content(incoming_rb, rb, old_rb_backup)
+        # `incoming_rb` is always disposable here: the real active bundle was only
+        # ever copied from, never moved, so it remains fully intact regardless of
+        # this promotion's outcome.
+        shutil.rmtree(incoming_rb, ignore_errors=True)
+        if replace_result.preserved_recovery_path is None:
+            shutil.rmtree(old_rb_backup, ignore_errors=True)
+        if not replace_result.ok:
+            config_after = capture_config_evidence()
+            assert_config_unchanged(config_before, config_after)
+            return LifecycleResult(
+                "install",
+                False,
+                f"filesystem error retaining known-good bundle in the rollback slot: "
+                f"{replace_result.reason}; active left untouched",
+                asdict(config_before),
+                asdict(config_after),
+                replace_result.preserved_recovery_path,
+            )
+        moved_prior_active = True
+
     try:
+        if active.exists():
+            shutil.rmtree(active)
         active.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(candidate, active)
     except OSError as exc:
@@ -483,8 +643,19 @@ def install(candidate: Path) -> LifecycleResult:
             asdict(config_after),
         )
 
+    cleanup = _clear_pipeline_temp_state()
     config_after = capture_config_evidence()
     assert_config_unchanged(config_before, config_after)
+    if not cleanup.ok:
+        return LifecycleResult(
+            "install",
+            False,
+            f"install committed and the canonical-path launch probe passed, but pipeline cleanup "
+            f"failed afterward: {cleanup.reason}",
+            asdict(config_before),
+            asdict(config_after),
+            str(terminal_recovery_path()) if terminal_recovery_path().exists() else None,
+        )
     return LifecycleResult("install", True, "", asdict(config_before), asdict(config_after))
 
 
@@ -512,19 +683,88 @@ def _restore_known_good(moved_prior_active: bool, rb: Path, active: Path) -> str
     return "automatically restored the known-good bundle to the canonical active path"
 
 
+def _restore_active_from_backup_after_probe_failure(active: Path, backup: Path) -> ReplaceResult:
+    """Restore `active` from `backup` after a post-rollback canonical-path probe
+    failure.
+
+    Never moves or risks `backup` itself directly during the ordinary restoration
+    attempt: a disposable copy is swapped into `active` instead, via
+    `_replace_directory_content`, so a failure during that attempt can never destroy
+    `backup`'s own content. `backup` remains the caller's safe fallback until this
+    reports success.
+
+    If this restoration attempt itself hits a true double filesystem failure (the
+    generic swap helper could neither commit the restoration copy into `active` nor
+    move the displaced content back), the content the generic helper relocated to
+    `terminal_recovery_path()` is whatever was still stuck at `active` -- the
+    lower-value bundle that just failed the post-rollback launch probe -- which is
+    exactly the wrong artifact to leave at the pipeline's one documented recovery
+    slot. `backup` itself is untouched by any of those moves and is already known
+    launchable (it was probe-validated by `validate_bundle_identity(active)` in
+    `rollback()` before it was ever copied aside to `backup`), so it is what actually
+    belongs at the recovery path. This relocates the true known-good `backup`
+    there in place of the failing candidate and discards the failing candidate
+    outright, so exactly one recovery bundle exists and it is guaranteed launchable.
+    """
+    restore_source = active.parent / f".{APP_NAME}.rollback-restore-staging"
+    throwaway_backup = active.parent / f".{APP_NAME}.rollback-restore-backup"
+    try:
+        if restore_source.exists():
+            shutil.rmtree(restore_source)
+        shutil.copytree(backup, restore_source)
+    except OSError as exc:
+        shutil.rmtree(restore_source, ignore_errors=True)
+        return ReplaceResult(False, f"could not stage a restoration copy from the backup: {exc}")
+
+    result = _replace_directory_content(restore_source, active, throwaway_backup)
+    shutil.rmtree(restore_source, ignore_errors=True)
+
+    if result.preserved_recovery_path is None:
+        shutil.rmtree(throwaway_backup, ignore_errors=True)
+        return result
+
+    recovery = terminal_recovery_path()
+    try:
+        recovery.parent.mkdir(parents=True, exist_ok=True)
+        if recovery.exists():
+            shutil.rmtree(recovery)
+        shutil.move(str(backup), str(recovery))
+    except OSError as exc:
+        return ReplaceResult(
+            False,
+            f"the post-rollback canonical-path probe failed and automatic restoration hit a double "
+            f"filesystem failure ({result.reason}); additionally failed to relocate the known-good "
+            f"bundle from {backup} to the terminal recovery path ({exc}); it remains safely "
+            f"available, untouched, at {backup}",
+        )
+    return ReplaceResult(
+        False,
+        f"the post-rollback canonical-path probe failed and automatic restoration hit a double "
+        f"filesystem failure (the canonical active path is MISSING, not preserved); the prior "
+        f"known-good bundle has been relocated to the terminal recovery path and remains safely "
+        f"available, launchable, at {recovery}",
+        str(recovery),
+    )
+
+
 def rollback() -> LifecycleResult:
     """Restore the single known-good rollback bundle over the active bundle.
 
-    Never deletes the active bundle before a working replacement is ready: the
-    rollback bundle is copied into a staging location first, and only a working
-    staged copy is swapped in for active (moving the existing active bundle to a
-    backup slot rather than deleting it). Any staging or swap failure leaves the
-    original active bundle exactly as it was, EXCEPT in the double-failure case
-    where the commit move and the automatic restoration move both fail: `active`
-    is then genuinely missing, and the backup is preserved undeleted at a
-    documented path (`LifecycleResult.preserved_backup_path`) instead of being
-    treated as disposable, so no recoverable copy of the prior known-good bundle
-    is ever lost.
+    Validates the existing active bundle's identity, executable, ad-hoc signature,
+    and launch probe before any mutation, aborting without mutation if it is foreign
+    or malformed -- exactly like `install`. Never deletes the active bundle before a
+    working replacement is ready: the rollback bundle is copied into a staging
+    location first, and only a working staged copy is swapped in for active (moving
+    the existing active bundle to a backup slot rather than deleting it). After the
+    swap commits, the restored bundle is launch-probed at the canonical active path
+    (never a staging proxy) before rollback is reported successful; a probe failure
+    triggers automatic restoration from the backup. Any staging, swap, or
+    post-restoration-probe failure leaves the original active bundle exactly as it
+    was, EXCEPT in a true double filesystem failure (commit move and the automatic
+    restoration move both fail): `active` is then genuinely missing, and the content
+    that would otherwise be destroyed is relocated to the bounded terminal recovery
+    bundle path (`LifecycleResult.preserved_recovery_path`) instead of being deleted,
+    so no recoverable copy of the prior known-good bundle is ever lost.
     """
     config_before = capture_config_evidence()
     rb = rollback_app_path()
@@ -548,6 +788,19 @@ def rollback() -> LifecycleResult:
         )
 
     active = active_app_path()
+    if active.exists():
+        active_validation = validate_bundle_identity(active)
+        if not active_validation.ok:
+            config_after = capture_config_evidence()
+            assert_config_unchanged(config_before, config_after)
+            return LifecycleResult(
+                "rollback",
+                False,
+                f"aborted: existing active bundle is foreign or malformed: {active_validation.reason}",
+                asdict(config_before),
+                asdict(config_after),
+            )
+
     staged = active.parent / f".{APP_NAME}.rollback-staging"
     backup = active.parent / f".{APP_NAME}.rollback-backup"
 
@@ -568,86 +821,156 @@ def rollback() -> LifecycleResult:
             asdict(config_after),
         )
 
-    active_existed = active.exists()
-    replace_error: Optional[str] = None
-    # Set only in the double-failure case below (commit move fails AND the
-    # automatic restoration move also fails), when `backup` is the sole
-    # remaining recoverable copy of the prior active bundle and must survive
-    # this call rather than being cleaned up.
-    unrecoverable_backup_path: Optional[str] = None
-    try:
-        if backup.exists():
-            shutil.rmtree(backup)
-        if active_existed:
-            # Move (not delete) the current active bundle aside; it is only ever
-            # discarded once the staged replacement has been committed successfully.
-            shutil.move(str(active), str(backup))
-        shutil.move(str(staged), str(active))
-    except OSError as commit_exc:
-        if active_existed and not active.exists() and backup.exists():
-            try:
-                shutil.move(str(backup), str(active))
-            except OSError as restore_exc:
-                # Double failure: neither the commit move nor the automatic
-                # restoration succeeded. `active` is genuinely missing right now
-                # -- this must never be reported as "active preserved". The
-                # backup is the only remaining recoverable copy of the prior
-                # known-good bundle and must never be deleted here; leave it at
-                # its documented path for manual recovery and report that path.
-                unrecoverable_backup_path = str(backup)
-                replace_error = (
-                    f"commit failed ({commit_exc}) and automatic restoration also failed "
-                    f"({restore_exc}); active is MISSING, not preserved; the last recoverable "
-                    f"known-good bundle is intentionally left at {backup} for manual recovery"
-                )
-            else:
-                replace_error = (
-                    f"commit failed ({commit_exc}); automatically restored active from the backup copy"
-                )
-        else:
-            replace_error = str(commit_exc)
-    finally:
-        shutil.rmtree(staged, ignore_errors=True)
-        if unrecoverable_backup_path is None:
-            shutil.rmtree(backup, ignore_errors=True)
+    replace_result = _replace_directory_content(staged, active, backup)
+    shutil.rmtree(staged, ignore_errors=True)
 
-    if replace_error is not None:
+    if not replace_result.ok:
+        if replace_result.preserved_recovery_path is None:
+            shutil.rmtree(backup, ignore_errors=True)
         config_after = capture_config_evidence()
         assert_config_unchanged(config_before, config_after)
         return LifecycleResult(
             "rollback",
             False,
-            f"filesystem error replacing active with staged rollback bundle: {replace_error}",
+            f"filesystem error replacing active with staged rollback bundle: {replace_result.reason}",
             asdict(config_before),
             asdict(config_after),
-            unrecoverable_backup_path,
+            replace_result.preserved_recovery_path,
         )
 
+    # The swap committed; `backup` still holds the pre-rollback active content,
+    # deliberately not yet deleted, in case the canonical-path probe below fails.
+    # Only now, at the real canonical active path (never a staging proxy), do we
+    # prove the restored bundle actually launches.
+    try:
+        probe = guarded_launch_probe(active / "Contents" / "MacOS" / EXECUTABLE_NAME)
+        probe_failure_note = "" if probe.ok else f"canonical-path launch probe after rollback failed: {probe.reason}"
+    except SystemExit:
+        probe = None
+        probe_failure_note = (
+            "canonical-path launch probe after rollback corrupted configuration evidence "
+            "(see CONFIG_MUTATED above)"
+        )
+
+    if probe is not None and probe.ok:
+        shutil.rmtree(backup, ignore_errors=True)
+        cleanup = _clear_pipeline_temp_state()
+        config_after = capture_config_evidence()
+        assert_config_unchanged(config_before, config_after)
+        if not cleanup.ok:
+            return LifecycleResult(
+                "rollback",
+                False,
+                f"rollback committed and the canonical-path launch probe passed, but pipeline "
+                f"cleanup failed afterward: {cleanup.reason}",
+                asdict(config_before),
+                asdict(config_after),
+                str(terminal_recovery_path()) if terminal_recovery_path().exists() else None,
+            )
+        return LifecycleResult("rollback", True, "", asdict(config_before), asdict(config_after))
+
+    restore_result = _restore_active_from_backup_after_probe_failure(active, backup)
+    if restore_result.ok:
+        shutil.rmtree(backup, ignore_errors=True)
+        cleanup = _clear_pipeline_temp_state()
+        config_after = capture_config_evidence()
+        if probe is not None:
+            assert_config_unchanged(config_before, config_after)
+        if not cleanup.ok:
+            return LifecycleResult(
+                "rollback",
+                False,
+                f"{probe_failure_note}; automatically restored the prior active bundle, but pipeline "
+                f"cleanup failed afterward: {cleanup.reason}",
+                asdict(config_before),
+                asdict(config_after),
+                str(terminal_recovery_path()) if terminal_recovery_path().exists() else None,
+            )
+        return LifecycleResult(
+            "rollback",
+            False,
+            f"{probe_failure_note}; automatically restored the prior active bundle",
+            asdict(config_before),
+            asdict(config_after),
+        )
+
+    # Restoration failed too.
     config_after = capture_config_evidence()
-    assert_config_unchanged(config_before, config_after)
-    return LifecycleResult("rollback", True, "", asdict(config_before), asdict(config_after))
+    if probe is not None:
+        assert_config_unchanged(config_before, config_after)
+    if restore_result.preserved_recovery_path is not None:
+        # The double-failure branch already relocated the true known-good bundle
+        # (never the failing candidate) to the terminal recovery path and moved
+        # `backup` there in the process, so `backup` no longer exists at its ad hoc
+        # path -- the reason text below must not claim otherwise.
+        reason = f"{probe_failure_note}; {restore_result.reason}"
+    else:
+        # `backup` itself was never moved during the restoration attempt (only
+        # copied from) and remains fully intact at its ad hoc path.
+        reason = (
+            f"{probe_failure_note}; automatic restoration also failed ({restore_result.reason}); "
+            f"active is NOT confirmed preserved; the prior known-good bundle remains safely available, "
+            f"untouched, at {backup}"
+        )
+    return LifecycleResult(
+        "rollback",
+        False,
+        reason,
+        asdict(config_before),
+        asdict(config_after),
+        restore_result.preserved_recovery_path,
+    )
 
 
 def uninstall() -> LifecycleResult:
     """Remove the active artifact; report remaining documented local state.
 
-    Runtime configuration is never touched.
+    Validates the existing active bundle's identity, executable, ad-hoc signature,
+    and launch probe before removing it, aborting without mutation if it is foreign
+    or malformed -- exactly like `install` and `rollback`. Runtime configuration is
+    never touched.
     """
     config_before = capture_config_evidence()
     active = active_app_path()
-    removed = active.exists()
-    if removed:
-        shutil.rmtree(active)
 
+    if active.exists():
+        active_validation = validate_bundle_identity(active)
+        if not active_validation.ok:
+            config_after = capture_config_evidence()
+            assert_config_unchanged(config_before, config_after)
+            return LifecycleResult(
+                "uninstall",
+                False,
+                f"aborted: existing active bundle is foreign or malformed: {active_validation.reason}",
+                asdict(config_before),
+                asdict(config_after),
+            )
+        shutil.rmtree(active)
+        removed = True
+    else:
+        removed = False
+
+    cleanup = _clear_pipeline_temp_state()
     config_after = capture_config_evidence()
     assert_config_unchanged(config_before, config_after)
 
     remaining = {
         "active_removed": removed,
         "rollback_bundle_present": rollback_app_path().exists(),
+        "terminal_recovery_bundle_present": terminal_recovery_path().exists(),
         "local_ship_dir_present": local_ship_dir().exists(),
         "support_dir_present": support_dir().exists(),
     }
+    if not cleanup.ok:
+        return LifecycleResult(
+            "uninstall",
+            False,
+            f"active removal succeeded, but pipeline cleanup failed afterward: {cleanup.reason}; "
+            f"remaining state: {json.dumps(remaining)}",
+            asdict(config_before),
+            asdict(config_after),
+            str(terminal_recovery_path()) if terminal_recovery_path().exists() else None,
+        )
     return LifecycleResult(
         "uninstall", True, json.dumps(remaining), asdict(config_before), asdict(config_after)
     )

@@ -242,6 +242,246 @@ class LifecycleTests(FakeHomeTestCase):
         after_evidence = local_ship.capture_config_evidence()
         self.assertEqual(before_evidence, after_evidence)
 
+    def test_rollback_aborts_without_mutation_when_active_is_foreign(self):
+        good_active = make_bundle(self.candidate_root, name=local_ship.APP_NAME)
+        self.assertTrue(local_ship.install(good_active).ok)
+        second = make_bundle(self.candidate_root, name="second.app")
+        self.assertTrue(local_ship.install(second).ok)  # good_active is now the rollback bundle
+        rollback_sha_before = local_ship.sha256_file(
+            local_ship.rollback_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+
+        # Replace the active bundle with a foreign one without going through this
+        # pipeline (e.g. an unrelated app dropped at the same fixed path).
+        foreign = make_bundle(self.candidate_root, name="foreign.app", bundle_id="com.example.other")
+        shutil.rmtree(local_ship.active_app_path())
+        shutil.copytree(foreign, local_ship.active_app_path())
+        before_evidence = local_ship.capture_config_evidence()
+
+        result = local_ship.rollback()
+
+        self.assertFalse(result.ok)
+        self.assertIn("foreign or malformed", result.reason)
+        active_plist = plistlib.loads((local_ship.active_app_path() / "Contents" / "Info.plist").read_bytes())
+        self.assertEqual(active_plist["CFBundleIdentifier"], "com.example.other")
+        rollback_sha_after = local_ship.sha256_file(
+            local_ship.rollback_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+        self.assertEqual(rollback_sha_after, rollback_sha_before)
+        after_evidence = local_ship.capture_config_evidence()
+        self.assertEqual(before_evidence, after_evidence)
+
+    def test_uninstall_aborts_without_mutation_when_active_is_foreign(self):
+        foreign = make_bundle(self.candidate_root, name="foreign.app", bundle_id="com.example.other")
+        local_ship.active_app_path().parent.mkdir(parents=True)
+        shutil.copytree(foreign, local_ship.active_app_path())
+        before_evidence = local_ship.capture_config_evidence()
+
+        result = local_ship.uninstall()
+
+        self.assertFalse(result.ok)
+        self.assertIn("foreign or malformed", result.reason)
+        self.assertTrue(local_ship.active_app_path().exists())
+        active_plist = plistlib.loads((local_ship.active_app_path() / "Contents" / "Info.plist").read_bytes())
+        self.assertEqual(active_plist["CFBundleIdentifier"], "com.example.other")
+        after_evidence = local_ship.capture_config_evidence()
+        self.assertEqual(before_evidence, after_evidence)
+
+    def test_install_retain_step_never_deletes_existing_rollback_before_replacement_ready(self):
+        first = make_bundle(self.candidate_root, name="first.app")
+        second = make_bundle(self.candidate_root, name="second.app")
+        self.assertTrue(local_ship.install(first).ok)  # first.app has no rollback bundle yet
+        self.assertTrue(local_ship.install(second).ok)  # first.app is now the rollback bundle
+        rollback_sha_before = local_ship.sha256_file(
+            local_ship.rollback_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+        active_sha_before = local_ship.sha256_file(
+            local_ship.active_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+        before_evidence = local_ship.capture_config_evidence()
+
+        real_move = shutil.move
+
+        def flaky_move(src, dst, *args, **kwargs):
+            # Fail only the promotion of the staged copy into the canonical
+            # rollback slot (the retain-known-good step's own commit move).
+            if "rollback-incoming" in str(src):
+                raise OSError("simulated failure promoting the retained bundle")
+            return real_move(src, dst, *args, **kwargs)
+
+        third = make_bundle(self.candidate_root, name="third.app")
+        with mock.patch.object(local_ship.shutil, "move", side_effect=flaky_move):
+            result = local_ship.install(third)
+
+        self.assertFalse(result.ok)
+        self.assertIn("retaining known-good bundle in the rollback slot", result.reason)
+        # The existing rollback bundle (first.app) must never have been deleted
+        # before its replacement (a copy of second.app) was safely promoted; it
+        # must still be exactly what it was before this failed install attempt.
+        rollback_sha_after = local_ship.sha256_file(
+            local_ship.rollback_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+        self.assertEqual(rollback_sha_after, rollback_sha_before)
+        # The real active bundle (second.app) is untouched -- it was only ever
+        # copied from during the retain step, never moved.
+        active_sha_after = local_ship.sha256_file(
+            local_ship.active_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+        self.assertEqual(active_sha_after, active_sha_before)
+        after_evidence = local_ship.capture_config_evidence()
+        self.assertEqual(before_evidence, after_evidence)
+
+    def test_install_retain_step_double_failure_preserves_recovery_bundle(self):
+        first = make_bundle(self.candidate_root, name="first.app")
+        second = make_bundle(self.candidate_root, name="second.app")
+        self.assertTrue(local_ship.install(first).ok)
+        self.assertTrue(local_ship.install(second).ok)  # first.app is now the rollback bundle
+        recovery = local_ship.terminal_recovery_path()
+        rb = local_ship.rollback_app_path()
+
+        real_move = shutil.move
+
+        def flaky_move(src, dst, *args, **kwargs):
+            # Fail both the promotion move (incoming -> rollback slot) and the
+            # automatic restoration move (old rollback backup -> rollback slot).
+            if str(dst) == str(rb) and ("rollback-incoming" in str(src) or "rollback-old" in str(src)):
+                raise OSError("simulated double failure: promotion and restoration both fail")
+            return real_move(src, dst, *args, **kwargs)
+
+        third = make_bundle(self.candidate_root, name="third.app")
+        with mock.patch.object(local_ship.shutil, "move", side_effect=flaky_move):
+            result = local_ship.install(third)
+
+        self.assertFalse(result.ok)
+        self.assertIn("MISSING, not preserved", result.reason)
+        self.assertEqual(result.preserved_recovery_path, str(recovery))
+        self.assertFalse(rb.exists())
+        self.assertTrue(recovery.exists())
+        self.assertTrue(local_ship.validate_bundle_identity(recovery).ok)
+        # The real active bundle (second.app) is untouched throughout -- the
+        # retain step only ever copies from it, never moves or deletes it.
+        self.assertTrue(local_ship.active_app_path().exists())
+
+    def test_rollback_post_restoration_probe_failure_triggers_automatic_restoration(self):
+        good = make_bundle(self.candidate_root, name="good.app")
+        second = make_bundle(self.candidate_root, name="second.app")
+        self.assertTrue(local_ship.install(good).ok)
+        self.assertTrue(local_ship.install(second).ok)  # good.app is now the rollback bundle
+        active_sha_before = local_ship.sha256_file(
+            local_ship.active_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+
+        # Corrupt the *legitimately retained* rollback bundle's executable after
+        # the fact (simulating content changing between the pre-copy rollback
+        # validation and the post-swap probe), so the canonical-path probe -- never
+        # a staging proxy -- is what actually catches the failure post-swap. The
+        # pre-copy validation is bypassed here on purpose to isolate that seam.
+        rb = local_ship.rollback_app_path()
+        broken = make_bundle(self.tmp_home, name="broken-source.app", exit_code=9)
+        shutil.copy2(
+            broken / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME,
+            rb / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME,
+        )
+        subprocess.run(["codesign", "--sign", "-", "--force", str(rb)], check=True, capture_output=True)
+        with mock.patch.object(local_ship, "validate_rollback_content", return_value=local_ship.BundleValidation(True)):
+            result = local_ship.rollback()
+
+        self.assertFalse(result.ok)
+        self.assertIn("canonical-path launch probe after rollback failed", result.reason)
+        self.assertIn("automatically restored the prior active bundle", result.reason)
+        active_sha_after = local_ship.sha256_file(
+            local_ship.active_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+        self.assertEqual(active_sha_after, active_sha_before)
+
+    def test_rollback_post_restoration_probe_failure_and_restore_failure_preserves_backup(self):
+        good = make_bundle(self.candidate_root, name="good.app")
+        second = make_bundle(self.candidate_root, name="second.app")
+        self.assertTrue(local_ship.install(good).ok)
+        self.assertTrue(local_ship.install(second).ok)  # good.app is now the rollback bundle
+        active = local_ship.active_app_path()
+        backup = active.parent / f".{local_ship.APP_NAME}.rollback-backup"
+        recovery = local_ship.terminal_recovery_path()
+        good_executable_sha = local_ship.sha256_file(
+            good / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        )
+
+        # Corrupt the legitimately retained rollback bundle so the post-swap
+        # canonical-path probe fails (bypassing pre-copy validation on purpose).
+        rb = local_ship.rollback_app_path()
+        broken = make_bundle(self.tmp_home, name="broken-source.app", exit_code=9)
+        shutil.copy2(
+            broken / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME,
+            rb / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME,
+        )
+        subprocess.run(["codesign", "--sign", "-", "--force", str(rb)], check=True, capture_output=True)
+
+        real_move = shutil.move
+
+        def flaky_move(src, dst, *args, **kwargs):
+            # Fail both moves inside the post-probe-failure restoration attempt:
+            # the commit move (restore-staging -> active) and the automatic
+            # restoration move (restore-backup -> active). This reproduces a nested
+            # double filesystem failure: the lower-value bundle that just failed
+            # the post-rollback probe cannot be cleared from the canonical active
+            # path while the true known-good bundle (`good.app`, still held at
+            # `backup` and never itself moved by these two calls) is being
+            # restored.
+            if str(dst) == str(active) and (
+                "rollback-restore-staging" in str(src) or "rollback-restore-backup" in str(src)
+            ):
+                raise OSError("simulated nested double failure during post-probe restoration")
+            return real_move(src, dst, *args, **kwargs)
+
+        with mock.patch.object(
+            local_ship, "validate_rollback_content", return_value=local_ship.BundleValidation(True)
+        ):
+            with mock.patch.object(local_ship.shutil, "move", side_effect=flaky_move):
+                result = local_ship.rollback()
+
+        self.assertFalse(result.ok)
+        self.assertIn("MISSING, not preserved", result.reason)
+        self.assertIn("relocated to the terminal recovery path", result.reason)
+        self.assertIn(str(recovery), result.reason)
+        self.assertNotIn(str(backup), result.reason)
+        self.assertEqual(result.preserved_recovery_path, str(recovery))
+
+        # The pipeline's ONE documented recovery slot holds the true known-good
+        # bundle (good.app), not the lower-value bundle that just failed the
+        # post-rollback probe -- and no ad hoc backup artifact is left behind
+        # alongside it.
+        self.assertFalse(backup.exists())
+        self.assertTrue(recovery.exists())
+        self.assertTrue(local_ship.validate_bundle_identity(recovery).ok)
+        recovery_sha = local_ship.sha256_file(recovery / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertEqual(recovery_sha, good_executable_sha)
+
+        # Exactly one artifact from this double failure exists anywhere on disk:
+        # `recovery` itself, and none of the transient staging/backup slots this
+        # attempt used are left behind as an undocumented second copy. (The
+        # existing rollback slot, `rb`, is a separate, always-legitimate single
+        # slot untouched by this failure and is not part of this count.)
+        for leftover_suffix in (
+            "rollback-backup",
+            "rollback-staging",
+            "rollback-restore-staging",
+            "rollback-restore-backup",
+        ):
+            self.assertFalse(
+                (active.parent / f".{local_ship.APP_NAME}.{leftover_suffix}").exists(),
+                f"transient slot {leftover_suffix} must not survive the double failure",
+            )
+
+        # The bounded terminal recovery bundle is not version history: it must be
+        # removed automatically by the next successful lifecycle action, whichever
+        # lifecycle action that happens to be. `active` is missing and the existing
+        # rollback bundle was deliberately corrupted for this test's setup, so the
+        # next successful action here is `uninstall` (a no-op removal that still
+        # runs pipeline cleanup), not a fresh `install`.
+        good_uninstall = local_ship.uninstall()
+        self.assertTrue(good_uninstall.ok, good_uninstall.reason)
+        self.assertFalse(recovery.exists(), "the recovery bundle must not outlive the next success")
+
     def test_install_rejects_malformed_candidate_without_touching_active(self):
         good_active = make_bundle(self.candidate_root, name=local_ship.APP_NAME)
         self.assertTrue(local_ship.install(good_active).ok)
@@ -487,6 +727,7 @@ class LifecycleTests(FakeHomeTestCase):
 
         active = local_ship.active_app_path()
         backup = active.parent / f".{local_ship.APP_NAME}.rollback-backup"
+        recovery = local_ship.terminal_recovery_path()
         before_evidence = local_ship.capture_config_evidence()
 
         real_move = shutil.move
@@ -494,9 +735,10 @@ class LifecycleTests(FakeHomeTestCase):
         def flaky_move(src, dst, *args, **kwargs):
             # Let "move active aside to backup" succeed, but fail BOTH the commit
             # move (staged -> active) and the automatic restoration move
-            # (backup -> active), reproducing the double-failure case where the
-            # backup is the sole remaining recoverable copy.
-            if "rollback-staging" in str(src) or "rollback-backup" in str(src):
+            # (backup -> active); let the subsequent relocation of the backup into
+            # the terminal recovery path succeed, reproducing the double-failure
+            # case where that relocation is the sole remaining recoverable copy.
+            if str(dst) == str(active) and ("rollback-staging" in str(src) or "rollback-backup" in str(src)):
                 raise OSError("simulated double failure: commit and restoration both fail")
             return real_move(src, dst, *args, **kwargs)
 
@@ -506,18 +748,83 @@ class LifecycleTests(FakeHomeTestCase):
         self.assertFalse(result.ok)
         self.assertIn("MISSING, not preserved", result.reason)
         self.assertNotIn("automatically restored", result.reason)
-        self.assertEqual(result.preserved_backup_path, str(backup))
+        self.assertEqual(result.preserved_recovery_path, str(recovery))
 
-        # Active is genuinely gone; the backup must never have been deleted, and
-        # must still be a valid, identifiable known-good bundle for manual recovery.
+        # Active is genuinely gone; the content must never have been deleted -- it
+        # is relocated to the single, documented, bounded terminal recovery bundle
+        # path (never left at the ad hoc backup path), and must still be a valid,
+        # identifiable known-good bundle for manual recovery.
         self.assertFalse(active.exists())
+        self.assertFalse(backup.exists())
         self.assertTrue(
-            backup.exists(), "the last recoverable known-good copy must be preserved, not deleted"
+            recovery.exists(), "the last recoverable known-good copy must be preserved, not deleted"
         )
-        self.assertTrue(local_ship.validate_bundle_identity(backup).ok)
+        self.assertTrue(local_ship.validate_bundle_identity(recovery).ok)
 
         after_evidence = local_ship.capture_config_evidence()
         self.assertEqual(before_evidence, after_evidence)
+
+        # The bounded terminal recovery bundle is not version history: it must be
+        # removed automatically by the next successful lifecycle action, whichever
+        # lifecycle action that happens to be. `active` is currently missing, so
+        # this next install runs as a first install (nothing to retain).
+        third = make_bundle(self.candidate_root, name="third.app")
+        good_install = local_ship.install(third)
+        self.assertTrue(good_install.ok, good_install.reason)
+        self.assertFalse(recovery.exists(), "the recovery bundle must not outlive the next success")
+
+    def test_install_reports_cleanup_failure_instead_of_unqualified_success(self):
+        # First, create a genuine double filesystem failure so the terminal recovery
+        # bundle is actually populated on disk.
+        first = make_bundle(self.candidate_root, name="first.app")
+        second = make_bundle(self.candidate_root, name="second.app")
+        self.assertTrue(local_ship.install(first).ok)
+        self.assertTrue(local_ship.install(second).ok)  # first.app is now the rollback bundle
+        recovery = local_ship.terminal_recovery_path()
+        rb = local_ship.rollback_app_path()
+
+        real_move = shutil.move
+
+        def flaky_move(src, dst, *args, **kwargs):
+            if str(dst) == str(rb) and ("rollback-incoming" in str(src) or "rollback-old" in str(src)):
+                raise OSError("simulated double failure: promotion and restoration both fail")
+            return real_move(src, dst, *args, **kwargs)
+
+        third = make_bundle(self.candidate_root, name="third.app")
+        with mock.patch.object(local_ship.shutil, "move", side_effect=flaky_move):
+            double_failure_result = local_ship.install(third)
+        self.assertFalse(double_failure_result.ok)
+        self.assertTrue(recovery.exists())
+
+        # Now run an otherwise-clean install, but simulate the terminal recovery
+        # bundle's removal itself silently not taking effect during cleanup (as a
+        # real `shutil.rmtree(..., ignore_errors=True)` failure would look from the
+        # caller's side): the lifecycle action must not report unqualified success
+        # while that recovery bundle is still on disk.
+        fourth = make_bundle(self.candidate_root, name="fourth.app")
+        real_rmtree = shutil.rmtree
+
+        def flaky_rmtree(path, *args, **kwargs):
+            if pathlib.Path(path) == recovery.parent:
+                return None  # simulate a removal that ignore_errors=True silently swallowed
+            return real_rmtree(path, *args, **kwargs)
+
+        with mock.patch.object(local_ship.shutil, "rmtree", side_effect=flaky_rmtree):
+            result = local_ship.install(fourth)
+
+        self.assertFalse(result.ok)
+        self.assertIn("pipeline cleanup failed", result.reason)
+        self.assertEqual(result.preserved_recovery_path, str(recovery))
+        self.assertTrue(recovery.exists())
+        # The install itself still fully committed and launched -- only the
+        # bookkeeping cleanup afterward failed.
+        self.assertTrue(local_ship.validate_bundle_identity(local_ship.active_app_path()).ok)
+
+        # A subsequent install, with real cleanup restored, must actually clear it.
+        fifth = make_bundle(self.candidate_root, name="fifth.app")
+        follow_up = local_ship.install(fifth)
+        self.assertTrue(follow_up.ok, follow_up.reason)
+        self.assertFalse(recovery.exists())
 
     def test_uninstall_removes_active_and_preserves_rollback_and_config(self):
         candidate = make_bundle(self.candidate_root, name=local_ship.APP_NAME)
