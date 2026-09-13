@@ -9,4 +9,4 @@ pointer-input-engine = { path = "../engine" }
 
 [lib]
 path = "src/lib.rs"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib", "cdylib", "staticlib"]

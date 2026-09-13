@@ -38,15 +38,94 @@ jobs:
       - name: Run hosted release regression benchmark
         run: just benchmark-ci
 
+  local-ship-candidate:
+    # Builds the canonical local-ship candidate on the macOS 26 hosted runner (the
+    # hosted stand-in for the macOS 26.6.2 reference Mac) and packages it, unmodified,
+    # for transport to the macos-14 lifecycle-compatibility job below. This job never
+    # runs on macos-14 and the macos-14 job below never rebuilds from source.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: macos-26
+    needs: [verify]
+    outputs:
+      sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install command router
+        run: brew install just
+      - name: Build local-ship candidate
+        run: just local-build
+      - name: Package candidate for transport
+        id: package
+        run: |
+          set -euo pipefail
+          python3 scripts/local_ship.py package-for-transport \
+            target/local-ship/candidate/MacMouseFlow.app \
+            target/local-ship/transport/MacMouseFlow.app.zip
+          echo "sha256=$(shasum -a 256 target/local-ship/transport/MacMouseFlow.app.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-ship-candidate
+          path: target/local-ship/transport/MacMouseFlow.app.zip
+          retention-days: 1
+
+  macos14-lifecycle:
+    # Proves same-artifact lifecycle *compatibility* only: install, launch-probe,
+    # update, rollback, uninstall mechanics using the exact transported artifact.
+    # Never claims TCC/Accessibility permission grants, live CGEventTap capture, or
+    # latency/benchmark results; those remain macOS 26 reference-Mac evidence only.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: macos-14
+    needs: [local-ship-candidate]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: local-ship-candidate
+          path: target/local-ship/transport
+      - name: Verify transported artifact matches the macOS 26 candidate, then install it
+        run: |
+          set -euo pipefail
+          python3 scripts/local_ship.py verify-transport \
+            target/local-ship/transport/MacMouseFlow.app.zip \
+            "${{ needs.local-ship-candidate.outputs.sha256 }}" \
+            target/local-ship/received
+          python3 scripts/local_ship.py install target/local-ship/received/MacMouseFlow.app
+      - name: Exercise a genuine controlled failed-update rollback
+        run: |
+          set -euo pipefail
+          # Same bundle identity/signature contract as the transported artifact, but a
+          # deliberately failing executable, so the failure is only discovered after
+          # the canonical-path commit and launch probe - never a rebuild of the
+          # candidate under test.
+          rm -rf target/local-ship/received-bad
+          mkdir -p target/local-ship/received-bad
+          cp -R target/local-ship/received/MacMouseFlow.app target/local-ship/received-bad/MacMouseFlow.app
+          printf 'int main(void) { return 9; }\n' > target/local-ship/received-bad/bad_main.c
+          cc -std=c11 target/local-ship/received-bad/bad_main.c -o target/local-ship/received-bad/MacMouseFlow.app/Contents/MacOS/macmouseflow
+          codesign --sign - --force target/local-ship/received-bad/MacMouseFlow.app
+          if python3 scripts/local_ship.py install target/local-ship/received-bad/MacMouseFlow.app; then
+            echo "expected the deliberately broken candidate to fail its canonical-path launch probe" >&2
+            exit 1
+          fi
+          python3 scripts/local_ship.py verify-active
+      - name: Exercise update, explicit rollback, and uninstall lifecycle compatibility
+        run: |
+          set -euo pipefail
+          python3 scripts/local_ship.py install target/local-ship/received/MacMouseFlow.app
+          python3 scripts/local_ship.py rollback
+          python3 scripts/local_ship.py uninstall
+
   ci-gate:
     if: always()
-    needs: [verify, macos14-behavior]
+    needs: [verify, macos14-behavior, local-ship-candidate, macos14-lifecycle]
     runs-on: ubuntu-latest
     steps:
       - name: Require verification success or intentional draft skip
         shell: bash
         run: |
-          case "${{ needs.verify.result }}:${{ needs.macos14-behavior.result }}" in
-            success:success|skipped:skipped) exit 0 ;;
+          results="${{ needs.verify.result }}:${{ needs.macos14-behavior.result }}:${{ needs.local-ship-candidate.result }}:${{ needs.macos14-lifecycle.result }}"
+          case "$results" in
+            success:success:success:success) exit 0 ;;
+            skipped:skipped:skipped:skipped) exit 0 ;;
             *) exit 1 ;;
           esac

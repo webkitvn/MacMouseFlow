@@ -2,6 +2,15 @@
 import PackageDescription
 
 let ffiProfile = Context.environment["MMF_FFI_PROFILE"] ?? "debug"
+// "dynamic" links the existing cdylib (default; unchanged prior behavior).
+// "static" links the staticlib archive directly so the produced executable has no
+// runtime dependency on target/ or the checkout; used only by the local-ship packaging
+// path (scripts/local_ship.py) to prove self-containment. Same C ABI either way.
+let ffiLinkage = Context.environment["MMF_FFI_LINKAGE"] ?? "dynamic"
+let bridgeLinkerSettings: [LinkerSetting] =
+    ffiLinkage == "static"
+    ? [.unsafeFlags(["../target/\(ffiProfile)/libpointer_input_ffi.a"])]
+    : [.unsafeFlags(["-L../target/\(ffiProfile)", "-lpointer_input_ffi"])]
 
 let package = Package(
     name: "MacMouseFlow",
@@ -18,7 +27,7 @@ let package = Package(
             name: "Bridge",
             dependencies: ["CPointerInput"],
             path: "Bridge/Sources/Bridge",
-            linkerSettings: [.unsafeFlags(["-L../target/\(ffiProfile)", "-lpointer_input_ffi"])]
+            linkerSettings: bridgeLinkerSettings
         ),
         .target(name: "Platform", dependencies: ["Bridge"], path: "Platform/Sources/Platform"),
         .executableTarget(name: "App", dependencies: ["Platform"], path: "App/Sources/App"),
