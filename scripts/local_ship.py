@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local macOS ship pipeline for MacMouseFlow (OpenSpec change issue-41-local-ship-pipeline).
+"""Local macOS ship pipeline for MacMouseFlow.
 
 Builds a self-contained, ad-hoc-signed local development artifact and exercises its
 install / update / rollback / uninstall lifecycle. Lifecycle tooling owns only
