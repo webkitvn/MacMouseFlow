@@ -58,6 +58,8 @@ A failed local install or update SHALL not replace the known-good artifact and S
 
 A directory-swap step (install's retain-known-good promotion, or rollback's active-swap) MAY create exactly one pipeline-owned, distinctly-named terminal recovery bundle, and only when both the commit move and the automatic restoration move of that swap fail (a true double filesystem failure), leaving the canonical target genuinely missing. This is not a second rollback slot or version history: the lifecycle path SHALL report its exact path in the structured failure result, SHALL NOT describe the canonical target as preserved in this branch, and SHALL remove the recovery bundle automatically on the next successful lifecycle action rather than retain it.
 
+Relocating the doomed content into the terminal recovery bundle SHALL always be attempted first on a true double filesystem failure. Only if that relocation itself also fails — a true triple filesystem failure — SHALL the lifecycle path stop attempting any further relocation; it SHALL NOT make a fourth attempt at another location. It SHALL instead report, in the structured failure result, the exact existing pipeline-owned path where the last recoverable known-good content already safely sits (the disposable slot the failed relocation attempt read from, itself never moved or deleted by that attempt), and SHALL NOT describe the canonical target or the canonical terminal recovery bundle as preserved in this branch. This surviving path is likewise not a second slot or version history: the lifecycle path SHALL remove it, and verify that removal actually took effect, on the next successful lifecycle action, exactly as it already does for the terminal recovery bundle.
+
 #### Scenario: Failed replacement preserves state
 - **WHEN** installation fails, the installed executable exits nonzero, terminates by signal, encounters dynamic-loader failure, or does not exit within 5 seconds
 - **THEN** the single known-good rollback bundle remains restorable and configuration evidence is unchanged
@@ -69,6 +71,10 @@ A directory-swap step (install's retain-known-good promotion, or rollback's acti
 #### Scenario: Double filesystem failure during a directory swap
 - **WHEN** a directory-swap step's commit move fails and its automatic restoration move also fails
 - **THEN** the canonical target is reported as genuinely missing (never as preserved), the bundle that would otherwise be destroyed is preserved at a single documented, named terminal recovery path reported in the failure result, and that recovery bundle is removed automatically by the next successful lifecycle action
+
+#### Scenario: Triple filesystem failure during a directory swap
+- **WHEN** a directory-swap step's commit move fails, its automatic restoration move also fails, and the relocation of the doomed content into the terminal recovery path also fails
+- **THEN** the lifecycle path makes no further relocation attempt, reports the exact existing pipeline-owned path where the content already safely sits in the structured failure result, does not describe the canonical target or the canonical terminal recovery bundle as preserved, and removes and verifies removal of that surviving path on the next successful lifecycle action
 
 #### Scenario: Unsupported distribution request
 - **WHEN** execution would require Developer ID, notarization, public distribution, automatic quarantine removal, or a new helper, daemon, or process

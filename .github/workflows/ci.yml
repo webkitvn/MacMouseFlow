@@ -125,8 +125,16 @@ jobs:
           mkdir -p target/local-ship/received-bad
           cp -R target/local-ship/received/MacMouseFlow.app target/local-ship/received-bad/MacMouseFlow.app
           printf 'int main(void) { return 9; }\n' > target/local-ship/received-bad/bad_main.c
-          cc -std=c11 target/local-ship/received-bad/bad_main.c -o target/local-ship/received-bad/MacMouseFlow.app/Contents/MacOS/macmouseflow
+          # Explicit -arch arm64 (ADR-0006, Oracle fix #2, Issue #41): the synthetic
+          # failed-update candidate's architecture is asserted directly, never
+          # inferred from this runner's default toolchain target.
+          cc -arch arm64 -std=c11 target/local-ship/received-bad/bad_main.c -o target/local-ship/received-bad/MacMouseFlow.app/Contents/MacOS/macmouseflow
           codesign --sign - --force target/local-ship/received-bad/MacMouseFlow.app
+          archs="$(lipo -archs target/local-ship/received-bad/MacMouseFlow.app/Contents/MacOS/macmouseflow)"
+          if [ "$archs" != "arm64" ]; then
+            echo "expected the synthetic failed-update candidate to be a thin arm64 executable, got: $archs" >&2
+            exit 1
+          fi
           if python3 scripts/local_ship.py install target/local-ship/received-bad/MacMouseFlow.app; then
             echo "expected the deliberately broken candidate to fail its canonical-path launch probe" >&2
             exit 1

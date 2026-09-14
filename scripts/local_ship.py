@@ -97,34 +97,40 @@ class CleanupResult:
 
 
 def _clear_pipeline_temp_state() -> CleanupResult:
-    """Remove any leftover transient slot and verify the bounded terminal recovery
-    bundle is actually gone.
+    """Remove every leftover pipeline-owned transient slot and the bounded terminal
+    recovery bundle, and verify each removal actually took effect.
 
-    Called only once a lifecycle action is about to report success, so the terminal
-    recovery bundle never persists past the next successful lifecycle action. The
-    transient staging/backup slots are always-disposable mid-operation scratch space
-    and are cleared best-effort. The terminal recovery bundle is different: it is the
-    one documented, reported exception this pipeline makes to "exactly one rollback
-    bundle" (design.md: "Bounded terminal recovery bundle on double filesystem
-    failure"), so its removal is verified rather than assumed. A caller MUST NOT
-    report unqualified lifecycle success while this reports failure.
+    Called only once a lifecycle action is about to report success, so no
+    pipeline-owned path -- transient staging/backup slot or terminal recovery bundle
+    alike -- persists past the next successful lifecycle action. Every removal
+    attempted here is verified rather than assumed (Oracle fix #3, Issue #41):
+    `shutil.rmtree(..., ignore_errors=True)` can silently swallow a real removal
+    failure, and a caller reporting unqualified success while any such path remains
+    on disk would leave an undocumented path behind. A caller MUST NOT report
+    unqualified lifecycle success while this reports failure.
     """
+    leftover_paths: list[str] = []
     for parent in (active_app_path().parent, rollback_app_path().parent):
         for suffix in _TRANSIENT_SLOT_SUFFIXES:
             candidate = parent / f".{APP_NAME}.{suffix}"
             if candidate.exists():
                 shutil.rmtree(candidate, ignore_errors=True)
+            if candidate.exists():
+                leftover_paths.append(str(candidate))
 
     recovery = terminal_recovery_path()
     recovery_root = recovery.parent
     if recovery_root.exists():
         shutil.rmtree(recovery_root, ignore_errors=True)
     if recovery.exists() or recovery_root.exists():
+        leftover_paths.append(str(recovery))
+
+    if leftover_paths:
         return CleanupResult(
             False,
-            f"the terminal recovery bundle at {recovery} could not be removed after a successful "
-            f"lifecycle action; it remains on disk and must be treated as still-present recovery "
-            f"state, not silently cleared",
+            "the following pipeline-owned path(s) could not be removed after a successful lifecycle "
+            f"action and remain on disk; they must be treated as still-present pipeline state, not "
+            f"silently cleared: {', '.join(leftover_paths)}",
         )
     return CleanupResult(True)
 
@@ -258,6 +264,17 @@ def validate_static_identity(bundle: Path) -> BundleValidation:
     if not executable.is_file():
         return BundleValidation(False, f"missing expected executable: {executable}")
 
+    # Architecture must be asserted before any launch probe (Oracle fix #2, ADR-0006,
+    # Issue #41): this runs for every eligibility boundary that funnels through
+    # `validate_static_identity` -- a new build candidate, any pre-existing active or
+    # rollback bundle (via `validate_bundle_identity`), and a transported/received
+    # bundle (via `verify_transport`) -- not only the artifact `build_candidate()`
+    # itself produces. `validate_bundle_identity` calls this (via this function)
+    # strictly before it ever executes the bundle's launch probe.
+    arch_validation = validate_thin_arm64_executable(executable)
+    if not arch_validation.ok:
+        return arch_validation
+
     return verify_ad_hoc_signature(bundle)
 
 
@@ -331,22 +348,40 @@ def _run(cmd: list[str], cwd: Optional[Path] = None, env: Optional[dict] = None)
         fail("BUILD_STEP_FAILED", f"command failed ({result.returncode}): {' '.join(cmd)}")
 
 
-def assert_thin_arm64_executable(executable: Path) -> None:
-    """Verify `executable` is a thin `arm64` Mach-O binary, never a Universal Binary or
-    any other architecture (ADR-0006: macOS 14+ on Apple Silicon only through v1;
-    PR #90 review comment, Issue #41). Aborts rather than accepting, translating, or
-    silently widening to a non-arm64 artifact.
+def validate_thin_arm64_executable(executable: Path) -> BundleValidation:
+    """Non-raising counterpart to `assert_thin_arm64_executable`, for use inside the
+    structured validation chain (`validate_static_identity`/`validate_bundle_identity`)
+    where a wrong-architecture executable must abort without mutation like any other
+    malformed content, not crash the whole process (Oracle fix #2, ADR-0006,
+    Issue #41). Never a Universal Binary or any other architecture; never accepts,
+    translates, or silently widens to a non-arm64 artifact. Callers MUST run this
+    before executing the bundle's launch probe.
     """
+    if not executable.is_file():
+        return BundleValidation(False, f"missing expected executable: {executable}")
+
     lipo = subprocess.run(["lipo", "-archs", str(executable)], text=True, capture_output=True, check=False)
     if lipo.returncode != 0:
-        fail("ARCHITECTURE_CHECK_FAILED", f"could not inspect executable architecture: {lipo.stderr.strip()}")
+        return BundleValidation(False, f"could not inspect executable architecture: {lipo.stderr.strip()}")
 
     archs = lipo.stdout.split()
     if archs != [REQUIRED_EXECUTABLE_ARCH]:
-        fail(
-            "ARCHITECTURE_CHECK_FAILED",
+        return BundleValidation(
+            False,
             f"expected a thin {REQUIRED_EXECUTABLE_ARCH} executable, got architecture(s) {archs!r} for {executable}",
         )
+    return BundleValidation(True)
+
+
+def assert_thin_arm64_executable(executable: Path) -> None:
+    """Build-time hard stop wrapping `validate_thin_arm64_executable`: aborts the
+    whole build (ADR-0006: macOS 14+ on Apple Silicon only through v1; PR #90 review
+    comment, Issue #41) rather than returning a structured result, since a
+    wrong-architecture build output must never even become eligible for signing.
+    """
+    result = validate_thin_arm64_executable(executable)
+    if not result.ok:
+        fail("ARCHITECTURE_CHECK_FAILED", result.reason)
 
 
 def build_candidate(profile: str = "release") -> Path:
@@ -501,16 +536,27 @@ def _replace_directory_content(source: Path, target: Path, backup: Path) -> Repl
                         shutil.rmtree(recovery)
                     shutil.move(str(backup), str(recovery))
                     recovery_path = str(recovery)
-                except OSError:
-                    # Even relocating to the documented recovery path failed; the
-                    # content is still safe at `backup` itself, so report that path
-                    # instead of silently losing it.
+                    triple_failure_note = ""
+                except OSError as recovery_exc:
+                    # True triple filesystem failure (design.md: "Resolution for a
+                    # true triple filesystem failure"): the commit move failed, the
+                    # automatic restoration move also failed, AND this relocation
+                    # into the documented terminal recovery path has now also
+                    # failed. No further relocation is attempted; the content
+                    # simply remains at its existing, pipeline-owned surviving path
+                    # (`backup`, never itself moved or deleted by this attempt).
                     recovery_path = str(backup)
+                    triple_failure_note = (
+                        f"; additionally failed to relocate it to the terminal recovery path "
+                        f"({recovery_exc}); no further relocation attempt will be made"
+                    )
                 return ReplaceResult(
                     False,
                     f"commit failed ({commit_exc}) and automatic restoration also failed "
                     f"({restore_exc}); {target} is MISSING, not preserved; the prior known-good "
-                    f"bundle is intentionally left at {recovery_path} for manual recovery",
+                    f"bundle remains safely available at {recovery_path}{triple_failure_note}, which "
+                    f"must be removed and its removal verified by the next successful lifecycle "
+                    f"action",
                     recovery_path,
                 )
             return ReplaceResult(
@@ -762,12 +808,24 @@ def _restore_active_from_backup_after_probe_failure(active: Path, backup: Path) 
             shutil.rmtree(recovery)
         shutil.move(str(backup), str(recovery))
     except OSError as exc:
+        # A true triple filesystem failure (design.md: "Resolution for a true triple
+        # filesystem failure"): the commit move failed, the automatic restoration
+        # move also failed, AND this relocation of the true known-good bundle into
+        # the terminal recovery path has now also failed. No further relocation is
+        # attempted -- the content simply remains at its existing, pipeline-owned
+        # surviving path (`backup`, never itself moved or deleted by this attempt).
+        # This is reported as that exact surviving path, never as the canonical
+        # target or the canonical terminal recovery bundle being preserved; `backup`
+        # must still be removed and its removal verified by the next successful
+        # lifecycle action, exactly like the terminal recovery bundle.
         return ReplaceResult(
             False,
             f"the post-rollback canonical-path probe failed and automatic restoration hit a double "
             f"filesystem failure ({result.reason}); additionally failed to relocate the known-good "
-            f"bundle from {backup} to the terminal recovery path ({exc}); it remains safely "
-            f"available, untouched, at {backup}",
+            f"bundle from {backup} to the terminal recovery path ({exc}); no further relocation "
+            f"attempt will be made; it remains safely available, untouched, at {backup}, which must "
+            f"be removed and its removal verified by the next successful lifecycle action",
+            str(backup),
         )
     return ReplaceResult(
         False,
@@ -957,13 +1015,32 @@ def rollback() -> LifecycleResult:
 def uninstall() -> LifecycleResult:
     """Remove the active artifact; report remaining documented local state.
 
-    Validates the existing active bundle's identity, executable, ad-hoc signature,
-    and launch probe before removing it, aborting without mutation if it is foreign
-    or malformed -- exactly like `install` and `rollback`. Runtime configuration is
-    never touched.
+    Validates any existing rollback bundle's identity, executable, ad-hoc signature,
+    and launch probe *before* removing a valid active bundle, aborting without
+    mutation if the rollback bundle is foreign or malformed (Oracle fix #1,
+    Issue #41): removing an active bundle while leaving a malformed rollback bundle
+    behind would let `uninstall`'s own reported `rollback_bundle_present: true`
+    mislead a caller into believing recovery is actually available. Also validates
+    the existing active bundle's identity, executable, ad-hoc signature, and launch
+    probe before removing it, aborting without mutation if it is foreign or malformed
+    -- exactly like `install` and `rollback`. Runtime configuration is never touched.
     """
     config_before = capture_config_evidence()
     active = active_app_path()
+    rb = rollback_app_path()
+
+    if rb.exists():
+        rollback_validation = validate_rollback_content(rb)
+        if not rollback_validation.ok:
+            config_after = capture_config_evidence()
+            assert_config_unchanged(config_before, config_after)
+            return LifecycleResult(
+                "uninstall",
+                False,
+                f"aborted: existing rollback bundle is malformed: {rollback_validation.reason}",
+                asdict(config_before),
+                asdict(config_after),
+            )
 
     if active.exists():
         active_validation = validate_bundle_identity(active)
