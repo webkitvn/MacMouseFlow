@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/local_ship.py (OpenSpec change issue-41-local-ship-pipeline).
+"""Unit tests for scripts/local_ship.py.
 
 All tests operate under an isolated fake $HOME so no real ~/Applications or
 ~/Library/Application Support state is ever touched.
