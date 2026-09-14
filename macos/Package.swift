@@ -7,10 +7,18 @@ let ffiProfile = Context.environment["MMF_FFI_PROFILE"] ?? "debug"
 // runtime dependency on target/ or the checkout; used only by the local-ship packaging
 // path (scripts/local_ship.py) to prove self-containment. Same C ABI either way.
 let ffiLinkage = Context.environment["MMF_FFI_LINKAGE"] ?? "dynamic"
+// Set only by the local-ship packaging path (scripts/local_ship.py), which builds the
+// Rust FFI crate with an explicit `--target aarch64-apple-darwin` (ADR-0006: macOS 14+
+// on Apple Silicon only through v1) rather than the host's default target triple. Cargo
+// then places its output under `target/<triple>/<profile>/` instead of
+// `target/<profile>/`. Unset for every other build path (dev builds, smoke, benchmark,
+// coherence-check), which keeps their prior unqualified `target/<profile>/` behavior.
+let ffiTargetTriple = Context.environment["MMF_FFI_TARGET_TRIPLE"]
+let ffiTargetDir = ffiTargetTriple.map { "\($0)/\(ffiProfile)" } ?? ffiProfile
 let bridgeLinkerSettings: [LinkerSetting] =
     ffiLinkage == "static"
-    ? [.unsafeFlags(["../target/\(ffiProfile)/libpointer_input_ffi.a"])]
-    : [.unsafeFlags(["-L../target/\(ffiProfile)", "-lpointer_input_ffi"])]
+    ? [.unsafeFlags(["../target/\(ffiTargetDir)/libpointer_input_ffi.a"])]
+    : [.unsafeFlags(["-L../target/\(ffiTargetDir)", "-lpointer_input_ffi"])]
 
 let package = Package(
     name: "MacMouseFlow",

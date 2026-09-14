@@ -170,6 +170,49 @@ class BundleValidationTests(FakeHomeTestCase):
         self.assertTrue(result.ok, result.reason)
 
 
+class ArchitectureAssertionTests(FakeHomeTestCase):
+    """ADR-0006: macOS 14+ on Apple Silicon (arm64) only through v1. These exercise
+    `assert_thin_arm64_executable` directly -- the same established seam other
+    standalone validation functions (e.g. `verify_ad_hoc_signature`) use -- rather than
+    running the full `build_candidate()` pipeline, which requires a real cargo/swift
+    build and is exercised only by the real-machine `just local-build` lifecycle.
+    """
+
+    def test_accepts_thin_arm64_executable(self):
+        exe = make_bundle(self.tmp_home, name="arm64.app") / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        local_ship.assert_thin_arm64_executable(exe)  # no raise
+
+    def test_rejects_thin_x86_64_executable(self):
+        src = self.tmp_home / "x86_64_main.c"
+        src.write_text("int main(void) { return 0; }\n")
+        exe = self.tmp_home / "x86_64_exe"
+        subprocess.run(["cc", "-arch", "x86_64", "-std=c11", str(src), "-o", str(exe)], check=True, capture_output=True)
+
+        with self.assertRaises(SystemExit):
+            local_ship.assert_thin_arm64_executable(exe)
+
+    def test_rejects_universal_binary_even_though_it_contains_arm64(self):
+        src = self.tmp_home / "universal_main.c"
+        src.write_text("int main(void) { return 0; }\n")
+        arm_exe = self.tmp_home / "universal_arm64"
+        x86_exe = self.tmp_home / "universal_x86_64"
+        subprocess.run(["cc", "-arch", "arm64", "-std=c11", str(src), "-o", str(arm_exe)], check=True, capture_output=True)
+        subprocess.run(["cc", "-arch", "x86_64", "-std=c11", str(src), "-o", str(x86_exe)], check=True, capture_output=True)
+        universal_exe = self.tmp_home / "universal_exe"
+        subprocess.run(
+            ["lipo", "-create", str(arm_exe), str(x86_exe), "-output", str(universal_exe)],
+            check=True,
+            capture_output=True,
+        )
+
+        with self.assertRaises(SystemExit):
+            local_ship.assert_thin_arm64_executable(universal_exe)
+
+    def test_rejects_missing_executable(self):
+        with self.assertRaises(SystemExit):
+            local_ship.assert_thin_arm64_executable(self.tmp_home / "does-not-exist")
+
+
 class GuardedLaunchProbeTests(FakeHomeTestCase):
     def test_guarded_probe_matches_plain_probe_on_the_happy_path(self):
         bundle = make_bundle(self.tmp_home, exit_code=0)

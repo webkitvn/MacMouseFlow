@@ -6,6 +6,8 @@ The only available reference Mac for this change runs macOS 26.6.2; no macOS 14 
 
 The pipeline's persistent state is exactly one canonical rollback bundle, plus one bounded exception: a pipeline-owned, named terminal recovery bundle that MAY exist temporarily, and only immediately after a true double filesystem failure during a directory swap (see "Bounded terminal recovery bundle on double filesystem failure" below; lead decision, Issue #41).
 
+MacMouseFlow supports macOS 14+ on Apple Silicon (`arm64`) only through v1; Intel `x86_64`, Rosetta 2 translation, and Universal Binary distribution are explicitly unsupported and deferred (ADR-0006; PR #90 review comment, https://github.com/webkitvn/MacMouseFlow/pull/90#issuecomment-5658089402, user-approved). The reference Mac and both existing hosted `macos-26`/`macos-14` runners happen to run Apple Silicon hardware today, but a runner's OS-version label is not itself an architecture assertion; this change must make the `arm64`-only boundary explicit in the build and verification path itself rather than rely on that incidental infrastructure fact (see "Apple Silicon (arm64)-only artifact and verification" below).
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -13,10 +15,12 @@ The pipeline's persistent state is exactly one canonical rollback bundle, plus o
 - Make local replacement transactional using exactly one known-good rollback bundle.
 - Exercise full artifact lifecycle behavior (install, launch, update, rollback, uninstall) on the macOS 26.6.2 reference Mac without changing runtime behavior.
 - Prove that a candidate built via the same canonical `just local-build` procedure on the existing GitHub-hosted `macos-26` runner is lifecycle-compatible, byte-identical and unmodified, on the existing GitHub-hosted `macos-14` runner, with integrity verified by SHA-256 and ad-hoc signature before and after transport, as a required, non-substitutable acceptance row distinct from — and never claiming the provenance of — the macOS 26.6.2 reference-Mac evidence.
+- Make the `arm64`-only architecture boundary explicit in the build and verification path itself (ADR-0006): the Rust FFI release build targets `aarch64-apple-darwin`, the produced local artifact is a thin `arm64` binary, and local build/candidate packaging and both hosted CI rows assert that architecture by inspecting the binary, never by inferring it from a runner's OS-version label.
 
 **Non-Goals:**
 - Developer ID, hardened runtime, notarization, public distribution, automatic quarantine removal, or a general installer/updater.
 - Persistent pipeline state beyond the one canonical rollback bundle and the single, bounded, self-cleaning terminal recovery bundle permitted only after a true double filesystem failure (see "Bounded terminal recovery bundle on double filesystem failure"); a helper, process, daemon, ABI, input, configuration-semantic, or permission change.
+- Intel `x86_64` support, Rosetta 2 compatibility work, Universal Binary (fat) packaging, or any runtime CPU-architecture detection (ADR-0006); these are explicitly deferred past v1, not merely untested.
 
 ## Decisions
 
@@ -50,6 +54,11 @@ Hosted macOS 14 evidence never claims TCC/Accessibility permission grants, live 
 
 Alternative: claim the macOS 14 row proves the physical reference Mac's own build is compatible with macOS 14. Rejected (lead decision, Issue #41): CI cannot reach the physical machine's build output without a new artifact-transport mechanism, which is out of scope; the hosted-to-hosted chain is the truthful claim this change can make. Alternative: treat macOS 26.6.2 reference-Mac evidence as sufficient on its own, or run the full lifecycle (including permission-gated behavior) on the hosted runner. Rejected: the first silently drops the only macOS 14 acceptance surface this change has access to; the second claims guarantees a headless, unattended hosted runner without TCC/Accessibility grants and without live input hardware cannot provide.
 
+### Apple Silicon (arm64)-only artifact and verification
+MacMouseFlow supports macOS 14+ on Apple Silicon (`arm64`) only through v1 (ADR-0006; PR #90 review comment, user-approved). The Rust FFI release build used by `just local-build` explicitly targets `aarch64-apple-darwin` rather than the host's default target triple. The produced local artifact is a thin `arm64` Mach-O binary — never a Universal Binary (fat `arm64`+`x86_64`) — and `just local-build` verifies this by inspecting the built executable's architecture directly (e.g. `lipo -archs` or `file`) before it is eligible for ad-hoc signing. Both the hosted `macos-26` candidate-build row and the hosted `macos-14` lifecycle-compatibility row perform the same direct binary-architecture inspection on the artifact they build or receive; a GitHub-hosted runner's OS-version label (`macos-26`, `macos-14`) is incidental infrastructure, not an architecture assertion, and MUST NOT be treated as one. No runtime CPU-architecture detection, Intel `x86_64` acceptance path, Rosetta 2 compatibility handling, or Universal Binary packaging is added anywhere in this pipeline.
+
+Alternative: infer architecture support from the GitHub-hosted runner's OS-version label, or from Xcode/Swift's default host-triple build behavior. Rejected (ADR-0006): a runner label is an infrastructure fact that could change independently of this project's support decision, and a default host-triple build silently tracks whatever architecture the build machine happens to be, neither of which is a truthful, durable assertion of the `arm64`-only support boundary. Alternative: build and ship a Universal Binary so the question is moot. Rejected (ADR-0006, PR #90): doubles the build/signing/verification surface for a v1 that has no committed Intel user base.
+
 ### Configuration remains opaque and untouched
 Lifecycle tooling owns only `LocalShip/`; it neither reads nor modifies runtime configuration. Record configuration existence, byte length, and SHA-256 before and after lifecycle operations. If real configuration is absent, create an opaque sentinel outside `LocalShip/` in app-owned Application Support and prove it byte-identical.
 
@@ -63,12 +72,13 @@ Alternative: parse, export, or migrate configuration. Rejected: it changes confi
 - [Lifecycle proof can leave local artifacts] → uninstall records only documented state and leaves runtime configuration untouched.
 - [Hosted macOS 14 runner or artifact-transport compatibility is unavailable] → record the macOS 14 row `NOT PROVEN` and return to Issue #41; never substitute macOS 26.6.2 reference-Mac evidence for it, never claim the transported artifact's provenance is the physical reference Mac, and never lower this acceptance criterion to close the change.
 - [A directory-swap step suffers a true double filesystem failure] → preserve the bounded terminal recovery bundle at its documented, named path, report it explicitly in the structured failure result without claiming the canonical target was preserved, and remove it automatically on the next successful lifecycle action; never retain it as version history.
+- [A GitHub-hosted runner's architecture changes, or a build tool's default target triple silently drifts to a non-`arm64` architecture] → this pipeline's own explicit binary-architecture inspection catches it and aborts, rather than trusting the runner label or the toolchain default; never accept, translate, or silently widen to a non-`arm64` artifact (ADR-0006).
 
 ## Migration Plan
 
 1. Retain Rust 1.98.1 and Xcode 26.6 pins; run `just ci` from a clean checkout.
-2. Implement and prove the static-linkage candidate outside the checkout, or the bounded embedded-dylib fallback.
+2. Implement and prove the static-linkage candidate outside the checkout, or the bounded embedded-dylib fallback; the Rust FFI release build targets `aarch64-apple-darwin` explicitly, and the produced artifact's architecture is verified to be a thin `arm64` binary by direct inspection before it is eligible for signing (ADR-0006).
 3. Install at the fixed active path on the macOS 26.6.2 reference Mac; validate pre-existing active/rollback content before every mutation that touches it (install, rollback, and uninstall alike).
 4. Exercise update, failure rollback, and uninstall on the reference Mac using the installed executable 5-second probe and configuration evidence; implement the bounded terminal recovery bundle exception for true double filesystem failures during a directory swap, self-cleaning on the next successful lifecycle action.
-5. On the existing GitHub-hosted `macos-26` runner, independently build a candidate via the identical canonical `just local-build` procedure; transport that hosted-built artifact — never the physical reference Mac's build — unmodified to the existing GitHub-hosted `macos-14` runner; verify SHA-256 and ad-hoc signature match before and after transport, then exercise install/update/rollback/uninstall lifecycle compatibility there; record `NOT PROVEN` and return to Issue #41 if unavailable rather than closing without it.
-6. Validate the OpenSpec change and archive only after all acceptance evidence — including a passing macOS 14 row — is available.
+5. On the existing GitHub-hosted `macos-26` runner, independently build a candidate via the identical canonical `just local-build` procedure, asserting the built artifact's architecture directly rather than inferring it from the runner label; transport that hosted-built artifact — never the physical reference Mac's build — unmodified to the existing GitHub-hosted `macos-14` runner; verify SHA-256, ad-hoc signature, and architecture match before and after transport, then exercise install/update/rollback/uninstall lifecycle compatibility there; record `NOT PROVEN` and return to Issue #41 if unavailable rather than closing without it.
+6. Validate the OpenSpec change and archive only after all acceptance evidence — including a passing macOS 14 row and the `arm64`-only architecture assertions — is available.

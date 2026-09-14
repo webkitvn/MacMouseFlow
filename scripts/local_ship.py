@@ -31,6 +31,12 @@ EXECUTABLE_NAME = "macmouseflow"
 LAUNCH_TIMEOUT_SECONDS = 5.0
 CANDIDATE_OUT_DIR = ROOT / "target" / "local-ship" / "candidate"
 
+# macOS 14+ on Apple Silicon (arm64) only through v1 (ADR-0006; PR #90 review comment,
+# Issue #41). Explicit, not inferred from the build host's or a hosted CI runner's
+# default target triple or OS-version label.
+RUST_TARGET_TRIPLE = "aarch64-apple-darwin"
+REQUIRED_EXECUTABLE_ARCH = "arm64"
+
 
 def fail(code: str, message: str) -> "NoReturn":
     print(f"{code}: {message}", file=sys.stderr)
@@ -325,6 +331,24 @@ def _run(cmd: list[str], cwd: Optional[Path] = None, env: Optional[dict] = None)
         fail("BUILD_STEP_FAILED", f"command failed ({result.returncode}): {' '.join(cmd)}")
 
 
+def assert_thin_arm64_executable(executable: Path) -> None:
+    """Verify `executable` is a thin `arm64` Mach-O binary, never a Universal Binary or
+    any other architecture (ADR-0006: macOS 14+ on Apple Silicon only through v1;
+    PR #90 review comment, Issue #41). Aborts rather than accepting, translating, or
+    silently widening to a non-arm64 artifact.
+    """
+    lipo = subprocess.run(["lipo", "-archs", str(executable)], text=True, capture_output=True, check=False)
+    if lipo.returncode != 0:
+        fail("ARCHITECTURE_CHECK_FAILED", f"could not inspect executable architecture: {lipo.stderr.strip()}")
+
+    archs = lipo.stdout.split()
+    if archs != [REQUIRED_EXECUTABLE_ARCH]:
+        fail(
+            "ARCHITECTURE_CHECK_FAILED",
+            f"expected a thin {REQUIRED_EXECUTABLE_ARCH} executable, got architecture(s) {archs!r} for {executable}",
+        )
+
+
 def build_candidate(profile: str = "release") -> Path:
     """Build a self-contained, ad-hoc-signed .app; prove static-linkage self-containment.
 
@@ -332,11 +356,15 @@ def build_candidate(profile: str = "release") -> Path:
     """
     import os
 
-    _run(["cargo", "build", "-p", "pointer-input-ffi", f"--{profile}", "--locked"], cwd=ROOT)
+    _run(
+        ["cargo", "build", "-p", "pointer-input-ffi", f"--{profile}", "--locked", "--target", RUST_TARGET_TRIPLE],
+        cwd=ROOT,
+    )
 
     env = dict(os.environ)
     env["MMF_FFI_PROFILE"] = profile
     env["MMF_FFI_LINKAGE"] = "static"
+    env["MMF_FFI_TARGET_TRIPLE"] = RUST_TARGET_TRIPLE
     _run(
         ["swift", "build", "-c", profile, "--package-path", "macos", "--product", EXECUTABLE_NAME],
         cwd=ROOT,
@@ -346,6 +374,10 @@ def build_candidate(profile: str = "release") -> Path:
     built_executable = ROOT / "macos" / ".build" / profile / EXECUTABLE_NAME
     if not built_executable.is_file():
         fail("BUILD_STEP_FAILED", f"expected built executable missing: {built_executable}")
+
+    # Verify architecture before the executable is ever copied into the candidate
+    # bundle or made eligible for signing (ADR-0006).
+    assert_thin_arm64_executable(built_executable)
 
     if CANDIDATE_OUT_DIR.exists():
         shutil.rmtree(CANDIDATE_OUT_DIR)

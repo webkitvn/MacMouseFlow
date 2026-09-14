@@ -9,24 +9,37 @@ evidence rows: macOS 26.6.2 reference Mac, and hosted macOS 26-to-macOS 14
 compatibility").
 
 Baseline commit: `cabf05d986bdf9fe95e8ae477495ccd2eea15046`. Reference Mac: macOS
-26.6.2 (this host). Last refreshed after a reviewer round fixing the bounded
-terminal recovery bundle's own correctness: the nested double filesystem failure
-inside `rollback()`'s post-probe restoration attempt was relocating the wrong
-artifact (the lower-value bundle that had just failed the post-rollback probe, not
-the true known-good bundle) into the recovery slot, while leaving a second,
-undocumented copy at an ad hoc backup path. `_restore_active_from_backup_after_probe_failure`
-now relocates the already-probe-validated known-good bundle there instead and
-discards the failing candidate, leaving no ad hoc backup behind. `_clear_pipeline_temp_state`
-now verifies the terminal recovery bundle's removal and returns a structured
-result; `install`/`rollback`/`uninstall` all now surface a structured failure
-rather than an unqualified success if that cleanup itself fails.
+26.6.2 (this host). Last refreshed after implementing tasks 5.1–5.4 (ADR-0006;
+PR #90 review comment, Issue #41): the project supports macOS 14+ on Apple Silicon
+(`arm64`) only through v1. The Rust FFI release build now targets
+`aarch64-apple-darwin` explicitly, `build_candidate()` asserts the built executable
+is a thin `arm64` binary before it is eligible for signing, and both hosted CI rows
+(`local-ship-candidate` on `macos-26`, `macos14-lifecycle` on `macos-14`) now run an
+explicit `lipo -archs` assertion on the artifact they build or receive, independent
+of their runner's OS-version label. This round's tasks 5.1–5.4 are now fully
+provable locally; the hosted-row CI content (`.github/workflows/ci.yml`) has not yet
+been observed executing on a real GitHub Actions run for this commit — see the
+hosted-row status note in the summary below.
+
+An earlier reviewer round separately fixed the bounded terminal recovery bundle's
+own correctness: the nested double filesystem failure inside `rollback()`'s
+post-probe restoration attempt was relocating the wrong artifact (the lower-value
+bundle that had just failed the post-rollback probe, not the true known-good
+bundle) into the recovery slot, while leaving a second, undocumented copy at an ad
+hoc backup path. `_restore_active_from_backup_after_probe_failure` now relocates the
+already-probe-validated known-good bundle there instead and discards the failing
+candidate, leaving no ad hoc backup behind. `_clear_pipeline_temp_state` now
+verifies the terminal recovery bundle's removal and returns a structured result;
+`install`/`rollback`/`uninstall` all now surface a structured failure rather than
+an unqualified success if that cleanup itself fails.
 
 ## Requirement: Produce a verified local development artifact
 
 | Scenario | macOS 26.6.2 reference-Mac evidence | Hosted macOS 26-to-macOS 14 compatibility evidence |
 |---|---|---|
-| Clean checkout produces an eligible artifact | `just local-build` run from an isolated clean-checkout copy (rsync excluding `.git`/`target`/`macos/.build`): `just ci` passed, static-linkage self-containment proven (`otool -L` on the built executable shows only system/Swift-runtime dylibs, zero references to the checkout or `target/`; relocated-to-`/tmp` copy exits 0), candidate ad-hoc signed and `codesign --verify --deep --strict` + `flags=0x2(adhoc)`/`Signature=adhoc` both confirmed. | **NOT PROVEN** — `local-ship-candidate` job (`.github/workflows/ci.yml`, hosted `macos-26` runner) has never executed; no push or `workflow_dispatch` occurred this session. |
+| Clean checkout produces an eligible artifact | `just local-build` run from a real checkout: `just ci` passed, the Rust FFI release build ran with `--target aarch64-apple-darwin` explicitly (confirmed in the build log: `+ cargo build -p pointer-input-ffi --release --locked --target aarch64-apple-darwin`), static-linkage self-containment proven (`otool -L` on the built executable shows only system/Swift-runtime dylibs, zero references to the checkout or `target/`; relocated-to-`/tmp` copy exits 0), the built executable independently confirmed a thin `arm64` Mach-O via `lipo -archs` (`arm64`, single slice), candidate ad-hoc signed and `codesign --verify --deep --strict` + `flags=0x2(adhoc)`/`Signature=adhoc` both confirmed. | **NOT PROVEN** — `local-ship-candidate` job (`.github/workflows/ci.yml`, hosted `macos-26` runner) has never executed for this commit; no push or `workflow_dispatch` occurred this session. |
 | Verification or signing fails | `verify_ad_hoc_signature`/`validate_static_identity` unit-tested (`tests/test_local_ship.py::BundleValidationTests`) to reject non-ad-hoc signatures, missing/malformed `Info.plist`, wrong bundle ID/executable. | **NOT PROVEN** — same job never run. |
+| Non-arm64 or Universal binary aborts | New this round: `assert_thin_arm64_executable()` unit-tested directly (`tests/test_local_ship.py::ArchitectureAssertionTests`) — accepts a genuine thin `arm64` executable; rejects a thin `x86_64` executable (built via `cc -arch x86_64`); rejects a Universal Binary containing both `arm64` and `x86_64` slices (built via `lipo -create`), even though it contains a valid `arm64` slice; rejects a missing executable path. `build_candidate()` calls this before the executable is ever copied into the candidate bundle or made eligible for signing. | **NOT PROVEN** — the assertion runs as part of `just local-build` inside the `local-ship-candidate` job and as an explicit standalone `lipo -archs` CI step immediately after it (mechanism only; not yet observed remotely). |
 
 ## Requirement: Exercise the local artifact lifecycle
 
@@ -40,7 +53,7 @@ rather than an unqualified success if that cleanup itself fails.
 
 | Scenario | macOS 26.6.2 reference-Mac evidence | Hosted macOS 26-to-macOS 14 compatibility evidence |
 |---|---|---|
-| Same artifact transported and verified | N/A — this row is specifically about the hosted-to-hosted chain, not the reference Mac. `package_for_transport`/`verify_transport`'s SHA-256 + ad-hoc-signature round-trip mechanism is unit-tested locally (`tests/test_local_ship.py::TransportVerificationTests`), proving the mechanism is correct. | **NOT PROVEN** — this is the acceptance row itself: it requires an observed run of `local-ship-candidate` (hosted `macos-26`, independent build) → `macos14-lifecycle` (hosted `macos-14`) on GitHub's real infrastructure, which has not occurred. Per the lead decision, this row never claims the physical reference Mac's build provenance; it proves the canonical procedure's hosted-built artifact is macOS-14-compatible. |
+| Same artifact transported and verified | N/A — this row is specifically about the hosted-to-hosted chain, not the reference Mac. `package_for_transport`/`verify_transport`'s SHA-256 + ad-hoc-signature round-trip mechanism is unit-tested locally (`tests/test_local_ship.py::TransportVerificationTests`), proving the mechanism is correct. | **NOT PROVEN** — this is the acceptance row itself: it requires an observed run of `local-ship-candidate` (hosted `macos-26`, independent build, now with an explicit `lipo -archs` arm64 assertion step immediately after `just local-build`) → `macos14-lifecycle` (hosted `macos-14`, now with an explicit `lipo -archs` arm64 assertion step immediately after `verify-transport` and before `install`) on GitHub's real infrastructure, which has not occurred. Per the lead decision, this row never claims the physical reference Mac's build provenance; it proves the canonical procedure's hosted-built artifact is macOS-14-compatible and `arm64`, asserted by inspecting the binary on both hosted rows rather than inferred from their `macos-26`/`macos-14` runner labels (ADR-0006). |
 | Hosted macOS 14 lifecycle compatibility passes | N/A. | **NOT PROVEN**. |
 | Hosted macOS 14 unavailable or incompatible | N/A. | This row's actual status **for this change**: NOT PROVEN because no remote run was authorized/attempted, not because the runner was observed unavailable. Per design.md/tasks.md 3.3, this blocks archive and returns to Issue #41 for a lead decision. |
 
@@ -57,9 +70,11 @@ rather than an unqualified success if that cleanup itself fails.
 | Pipeline cleanup after a successful lifecycle action cannot silently leave the terminal recovery bundle behind | Fixed and evidenced this round (reviewer finding): `_clear_pipeline_temp_state()` previously called `shutil.rmtree(..., ignore_errors=True)` on the recovery directory and returned nothing, so a real removal failure would have been silently swallowed while the caller still reported unqualified success. It now verifies the recovery bundle is actually gone and returns a structured `CleanupResult`; `install()`, `rollback()`'s happy path, and `uninstall()` all now check that result and report a structured failure (with `preserved_recovery_path` pointing at the still-present bundle) instead of `ok: true` when cleanup fails, even though the lifecycle mutation itself fully committed. Regression test `test_install_reports_cleanup_failure_instead_of_unqualified_success` fault-injects a real double failure to populate the recovery bundle, then simulates its removal silently not taking effect during a subsequent otherwise-clean install, and confirms the install reports `ok: false` with the recovery path, then confirms a further install with real cleanup restored actually clears it. | N/A — proven by the local unit test regardless of host. |
 | Foreign or malformed copy aborts (install, rollback, and uninstall alike) | Real/unit tests: a foreign-bundle-ID active copy causes `install`, `rollback`, and `uninstall` to each abort with zero mutation (`test_install_aborts_without_mutation_when_active_is_foreign`, `test_rollback_aborts_without_mutation_when_active_is_foreign`, `test_uninstall_aborts_without_mutation_when_active_is_foreign`); malformed rollback content rejected without mutation. | **NOT PROVEN**. |
 | Unsupported distribution request | No Developer ID, notarization, public distribution, quarantine removal, or new helper/daemon/process was added anywhere in this diff (verified by review of `scripts/local_ship.py`, `.github/workflows/ci.yml`, `Justfile`, `Package.swift`, `Cargo.toml`). | N/A — this is a design-time exclusion, not a runtime scenario requiring hosted evidence. |
+| Unsupported architecture request | New this round (ADR-0006): no Intel `x86_64` acceptance path, Rosetta 2 compatibility handling, Universal Binary packaging, or runtime CPU-architecture detection was added anywhere in this diff (verified by review of `scripts/local_ship.py`, `.github/workflows/ci.yml`, `macos/Package.swift`, `rust/ffi/Cargo.toml`); `assert_thin_arm64_executable()` aborts rather than accepting or translating a non-`arm64` artifact. | N/A — this is a design-time exclusion, not a runtime scenario requiring hosted evidence. |
 
 ## Summary
 
-- **macOS 26.6.2 reference-Mac row: fully evidenced** for every requirement above, using genuine real-machine installs/updates/genuine-controlled-failed-updates/rollbacks/uninstalls plus targeted unit tests for fault-injection scenarios (including nested double failures and pipeline-cleanup failures) that are impractical to trigger organically on real hardware every run. All 43 tests in `tests/test_local_ship.py` pass, plus 73/73 across the full Python suite; `just check` and `just test` pass; `openspec validate --strict` reports the change valid.
-- **Hosted macOS 26-to-macOS 14 compatibility row: NOT PROVEN for every requirement.** No commit was pushed and no `workflow_dispatch` was triggered this session (worker scope prohibits committing/pushing). The CI wiring (`local-ship-candidate` on hosted `macos-26`, `macos14-lifecycle` on hosted `macos-14`, including the `verify-active` step after `rollback`) is implemented and unit-tested at the mechanism level but has no observed remote execution. Per the lead decision, this row never claims the physical reference Mac's build provenance.
+- **macOS 26.6.2 reference-Mac row: fully evidenced** for every requirement above, using genuine real-machine installs/updates/genuine-controlled-failed-updates/rollbacks/uninstalls plus targeted unit tests for fault-injection scenarios (including nested double failures, pipeline-cleanup failures, and non-arm64/Universal architecture rejection) that are impractical to trigger organically on real hardware every run. All 47 tests in `tests/test_local_ship.py` pass, plus 77/77 across the full Python suite; `just check` and `just test` pass; `openspec validate --strict` reports the change valid.
+- **Tasks 5.1–5.4 (Apple Silicon `arm64`-only architecture assertion, ADR-0006): fully proven locally.** `just local-build` was re-run end to end on the macOS 26.6.2 reference Mac: the Rust FFI release build used `--target aarch64-apple-darwin` explicitly, the produced executable was confirmed a thin `arm64` Mach-O by independent `lipo -archs` inspection, `codesign --verify` passed, and the full install/update/rollback (with post-restoration `verify-active`)/uninstall lifecycle was re-exercised successfully against this arm64-explicit artifact, leaving the machine clean. The dynamic-linkage default path (`just test`'s `swift test`, unaffected by `MMF_FFI_TARGET_TRIPLE`) was also re-confirmed working, showing the change is scoped to the local-ship packaging path only.
+- **Hosted macOS 26-to-macOS 14 compatibility row: NOT PROVEN for every requirement, including the new arm64 assertion steps.** No commit was pushed and no `workflow_dispatch` was triggered this session (worker scope prohibits committing/pushing). The CI wiring (`local-ship-candidate` on hosted `macos-26`, `macos14-lifecycle` on hosted `macos-14`, including the `verify-active` step after `rollback` and the new explicit `lipo -archs` arm64 assertion steps in both jobs) is implemented and unit-tested/locally-exercised at the mechanism level but has no observed remote execution for this commit. Per the lead decision, this row never claims the physical reference Mac's build provenance.
 - Per design.md/tasks.md (task 3.3), this change **must not archive or close** until the hosted macOS 14 row is observed to PASS on a real GitHub Actions run, or a lead decision explicitly accepts/updates this acceptance criterion. This file does not lower that bar; it only makes the current evidence state explicit and auditable.

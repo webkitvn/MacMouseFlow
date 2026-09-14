@@ -54,6 +54,19 @@ jobs:
         run: brew install just
       - name: Build local-ship candidate
         run: just local-build
+      - name: Verify candidate architecture is thin arm64 (ADR-0006)
+        # `just local-build` already asserts this internally before signing
+        # (scripts/local_ship.py: assert_thin_arm64_executable); this step makes that
+        # assertion explicit and independently visible in this hosted macos-26 row's
+        # own CI log, rather than relying on the macos-26 runner label as an implicit
+        # architecture proxy.
+        run: |
+          set -euo pipefail
+          archs="$(lipo -archs target/local-ship/candidate/MacMouseFlow.app/Contents/MacOS/macmouseflow)"
+          if [ "$archs" != "arm64" ]; then
+            echo "expected a thin arm64 executable, got: $archs" >&2
+            exit 1
+          fi
       - name: Package candidate for transport
         id: package
         run: |
@@ -82,14 +95,25 @@ jobs:
         with:
           name: local-ship-candidate
           path: target/local-ship/transport
-      - name: Verify transported artifact matches the macOS 26 candidate, then install it
+      - name: Verify transported artifact matches the macOS 26 candidate
         run: |
           set -euo pipefail
           python3 scripts/local_ship.py verify-transport \
             target/local-ship/transport/MacMouseFlow.app.zip \
             "${{ needs.local-ship-candidate.outputs.sha256 }}" \
             target/local-ship/received
-          python3 scripts/local_ship.py install target/local-ship/received/MacMouseFlow.app
+      - name: Verify received architecture is thin arm64 (ADR-0006)
+        # Asserts arm64 by inspecting the received binary itself, independent of and
+        # never inferred from the macos-14 runner's OS-version label.
+        run: |
+          set -euo pipefail
+          archs="$(lipo -archs target/local-ship/received/MacMouseFlow.app/Contents/MacOS/macmouseflow)"
+          if [ "$archs" != "arm64" ]; then
+            echo "expected a thin arm64 executable, got: $archs" >&2
+            exit 1
+          fi
+      - name: Install the transported candidate
+        run: python3 scripts/local_ship.py install target/local-ship/received/MacMouseFlow.app
       - name: Exercise a genuine controlled failed-update rollback
         run: |
           set -euo pipefail
