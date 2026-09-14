@@ -15,7 +15,7 @@ build:
 check:
     python3 scripts/verify_toolchain.py
     python3 scripts/guardrail_registry.py --check
-    python3 -m py_compile scripts/next_work.py scripts/verify_toolchain.py scripts/guardrail_registry.py tests/test_next_work.py tests/test_repository_contract.py tests/test_guardrail_registry.py
+    python3 -m py_compile scripts/next_work.py scripts/verify_toolchain.py scripts/guardrail_registry.py scripts/local_ship.py tests/test_next_work.py tests/test_repository_contract.py tests/test_guardrail_registry.py tests/test_local_ship.py
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -28,6 +28,10 @@ test:
     MMF_FFI_PROFILE=debug swift test --package-path macos
 
 ci: check test build
+
+local-build:
+    just ci
+    python3 scripts/local_ship.py build
 
 hooks-install:
     chmod +x .githooks/pre-commit .githooks/pre-push

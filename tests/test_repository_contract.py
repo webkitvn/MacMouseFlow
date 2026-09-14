@@ -51,6 +51,7 @@ class RepositoryContractTests(unittest.TestCase):
             "check:",
             "test:",
             "ci:",
+            "local-build:",
             "benchmark:",
             "smoke:",
             "hooks-install:",
@@ -85,7 +86,15 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("runs-on: macos-14", workflow)
         self.assertIn("just macos14-behavior", workflow)
         self.assertIn("just benchmark-ci", workflow)
-        self.assertIn("success:success|skipped:skipped", workflow)
+        self.assertIn("just local-build", workflow)
+        self.assertIn("local-ship-candidate:", workflow)
+        self.assertIn("macos14-lifecycle:", workflow)
+        self.assertIn("scripts/local_ship.py verify-transport", workflow)
+        self.assertIn("scripts/local_ship.py verify-active", workflow)
+        self.assertIn("rm -f \"$HOME/Library/Application Support/io.github.webkitvn.macmouseflow/LocalShip/lifecycle.json\"", workflow)
+        self.assertIn("genuine controlled failed-update rollback", workflow)
+        self.assertIn("success:success:success:success", workflow)
+        self.assertIn("skipped:skipped:skipped:skipped", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertNotIn("cargo test", workflow)
         self.assertNotIn("cargo clippy", workflow)
