@@ -76,66 +76,36 @@ def terminal_recovery_path() -> Path:
     return local_ship_dir() / "terminal-recovery" / APP_NAME
 
 
-def terminal_blocked_marker_path() -> Path:
-    """Persistent operator-resolution gate for a true triple filesystem failure."""
-    return local_ship_dir() / "terminal-blocked.json"
+# These are the only ad hoc slots a triple failure can leave holding content.
+# Their presence is the complete terminal BLOCKED signal; no second state file exists.
+_TERMINAL_BLOCKED_SURVIVOR_SUFFIXES = (
+    "rollback-old",
+    "rollback-backup",
+    "rollback-restore-backup",
+)
 
 
-# These are the only ad hoc slots a triple failure can leave holding known-good
-# content. Their presence is a fail-safe BLOCKED signal even if marker persistence
-# itself failed; ordinary lifecycle paths remove them before reporting success.
-_TERMINAL_BLOCKED_SURVIVOR_SUFFIXES = ("rollback-old", "rollback-backup")
-
-
-def _terminal_blocked_state() -> tuple[bool, Optional[str], str]:
-    marker = terminal_blocked_marker_path()
-    allowed = {
+def _terminal_blocked_state() -> tuple[bool, Optional[str]]:
+    survivors = [
         parent / f".{APP_NAME}.{suffix}"
         for parent in (active_app_path().parent, rollback_app_path().parent)
         for suffix in _TERMINAL_BLOCKED_SURVIVOR_SUFFIXES
-    }
-    survivors = [path for path in allowed if path.exists()]
-    marker_path: Optional[Path] = None
-    marker_error = ""
-    if marker.exists():
-        try:
-            value = json.loads(marker.read_text())["surviving_path"]
-            candidate = Path(value) if isinstance(value, str) else None
-            if candidate in allowed and candidate.exists():
-                marker_path = candidate
-            else:
-                marker_error = "marker path is stale or outside bounded survivor slots"
-        except (OSError, KeyError, TypeError, json.JSONDecodeError):
-            marker_error = "marker content is malformed"
-
+        if (parent / f".{APP_NAME}.{suffix}").exists()
+    ]
     if len(survivors) == 1:
-        return True, str(survivors[0]), marker_error
-    if marker.exists() or survivors:
-        detail = marker_error or "multiple bounded survivor slots exist"
-        return True, None, f"marker-integrity failure: {detail}"
-    return False, None, ""
-
-
-def _record_terminal_blocked_state(surviving_path: Path) -> None:
-    marker = terminal_blocked_marker_path()
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"surviving_path": str(surviving_path)}) + "\n")
-    except OSError:
-        # ponytail: deterministic survivor-slot detection blocks until operator resolution.
-        pass
+        return True, str(survivors[0])
+    return bool(survivors), None
 
 
 def _blocked_lifecycle_result(action: str) -> Optional[LifecycleResult]:
-    blocked, surviving_path, integrity_reason = _terminal_blocked_state()
+    blocked, surviving_path = _terminal_blocked_state()
     if not blocked:
         return None
-    location = surviving_path or "an unresolved pipeline-owned survivor slot"
-    detail = f"; {integrity_reason}" if integrity_reason else ""
+    location = surviving_path or "ambiguous pipeline-owned survivor slots"
     return LifecycleResult(
         action,
         False,
-        f"terminal BLOCKED state: surviving pipeline-owned bundle remains at {location}{detail}; "
+        f"terminal BLOCKED state: surviving pipeline-owned bundle remains at {location}; "
         "operator resolution is required before automated lifecycle actions can resume",
         preserved_recovery_path=surviving_path,
     )
@@ -175,11 +145,10 @@ def _clear_pipeline_temp_state() -> CleanupResult:
     unqualified lifecycle success while this reports failure.
     """
     leftover_paths: list[str] = []
-    blocked, blocked_surviving_path, integrity_reason = _terminal_blocked_state()
+    blocked, blocked_surviving_path = _terminal_blocked_state()
     if blocked:
-        location = blocked_surviving_path or "an unresolved pipeline-owned survivor slot"
-        detail = f"; {integrity_reason}" if integrity_reason else ""
-        return CleanupResult(False, f"terminal BLOCKED state requires operator resolution: {location}{detail}")
+        location = blocked_surviving_path or "ambiguous pipeline-owned survivor slots"
+        return CleanupResult(False, f"terminal BLOCKED state requires operator resolution: {location}")
     for parent in (active_app_path().parent, rollback_app_path().parent):
         for suffix in _TRANSIENT_SLOT_SUFFIXES:
             candidate = parent / f".{APP_NAME}.{suffix}"
@@ -617,7 +586,6 @@ def _replace_directory_content(source: Path, target: Path, backup: Path) -> Repl
                     # failed. No further relocation is attempted; the content
                     # simply remains at its existing, pipeline-owned surviving path
                     # (`backup`, never itself moved or deleted by this attempt).
-                    _record_terminal_blocked_state(backup)
                     recovery_path = str(backup)
                     triple_failure_note = (
                         f"; additionally failed to relocate it to the terminal recovery path "
@@ -874,6 +842,25 @@ def _restore_active_from_backup_after_probe_failure(active: Path, backup: Path) 
     if result.preserved_recovery_path is None:
         shutil.rmtree(throwaway_backup, ignore_errors=True)
         return result
+    if result.preserved_recovery_path != str(terminal_recovery_path()):
+        # The generic helper's triple-failure survivor is the lower-value candidate
+        # displaced from active. The outer backup is the validated known-good bundle;
+        # never move it again. Remove only the disposable candidate, then report the
+        # still-existing outer backup as the unique survivor.
+        lower_value = Path(result.preserved_recovery_path)
+        shutil.rmtree(lower_value, ignore_errors=True)
+        if lower_value.exists():
+            return ReplaceResult(
+                False,
+                f"{result.reason}; terminal BLOCKED integrity failure: could not remove lower-value "
+                f"transient survivor at {lower_value}; outer known-good backup remains at {backup}",
+            )
+        return ReplaceResult(
+            False,
+            f"{result.reason}; discarded lower-value transient survivor; terminal BLOCKED state "
+            f"preserves the outer known-good backup at {backup}",
+            str(backup),
+        )
 
     recovery = terminal_recovery_path()
     try:
@@ -884,7 +871,6 @@ def _restore_active_from_backup_after_probe_failure(active: Path, backup: Path) 
     except OSError as exc:
         # The third failure leaves the known-good bundle untouched at `backup` and
         # terminally blocks further automated lifecycle mutation.
-        _record_terminal_blocked_state(backup)
         return ReplaceResult(
             False,
             f"the post-rollback canonical-path probe failed and automatic restoration hit a double "
