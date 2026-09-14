@@ -12,6 +12,7 @@ sentinel) is already present.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import plistlib
@@ -76,39 +77,114 @@ def terminal_recovery_path() -> Path:
     return local_ship_dir() / "terminal-recovery" / APP_NAME
 
 
-# These are the only ad hoc slots a triple failure can leave holding content.
-# Their presence is the complete terminal BLOCKED signal; no second state file exists.
-_TERMINAL_BLOCKED_SURVIVOR_SUFFIXES = (
-    "rollback-old",
-    "rollback-backup",
-    "rollback-restore-backup",
-)
+def lifecycle_record_path() -> Path:
+    return local_ship_dir() / "lifecycle.json"
 
 
-def _terminal_blocked_state() -> tuple[bool, Optional[str]]:
-    survivors = [
-        parent / f".{APP_NAME}.{suffix}"
-        for parent in (active_app_path().parent, rollback_app_path().parent)
-        for suffix in _TERMINAL_BLOCKED_SURVIVOR_SUFFIXES
-        if (parent / f".{APP_NAME}.{suffix}").exists()
-    ]
-    if len(survivors) == 1:
-        return True, str(survivors[0])
-    return bool(survivors), None
+def lifecycle_lock_path() -> Path:
+    return local_ship_dir() / "lifecycle.lock"
 
 
-def _blocked_lifecycle_result(action: str) -> Optional[LifecycleResult]:
-    blocked, surviving_path = _terminal_blocked_state()
-    if not blocked:
+def _read_lifecycle_record() -> Optional[dict]:
+    path = lifecycle_record_path()
+    if not path.exists():
         return None
-    location = surviving_path or "ambiguous pipeline-owned survivor slots"
-    return LifecycleResult(
-        action,
-        False,
-        f"terminal BLOCKED state: surviving pipeline-owned bundle remains at {location}; "
-        "operator resolution is required before automated lifecycle actions can resume",
-        preserved_recovery_path=surviving_path,
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _allowed_survivor_paths() -> set[str]:
+    return {
+        str(terminal_recovery_path()),
+        str(rollback_app_path().parent / f".{APP_NAME}.rollback-old"),
+        str(active_app_path().parent / f".{APP_NAME}.rollback-backup"),
+        str(active_app_path().parent / f".{APP_NAME}.rollback-restore-backup"),
+    }
+
+
+def _valid_lifecycle_record(record: dict) -> bool:
+    survivor = record.get("survivor_path")
+    return (
+        record.get("operation") in {"install", "rollback", "uninstall"}
+        and (survivor is None or (isinstance(survivor, str) and survivor in _allowed_survivor_paths() and Path(survivor).exists()))
     )
+
+
+def _remaining_lifecycle_state() -> dict:
+    return {
+        "active_bundle_present": active_app_path().exists(),
+        "rollback_bundle_present": rollback_app_path().exists(),
+        "terminal_recovery_bundle_present": terminal_recovery_path().exists(),
+    }
+
+
+def _write_lifecycle_record(operation: str, survivor_path: Optional[str]) -> None:
+    record = lifecycle_record_path()
+    record.parent.mkdir(parents=True, exist_ok=True)
+    staged_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=record.parent, delete=False) as staged:
+            staged_path = Path(staged.name)
+            json.dump({"operation": operation, "survivor_path": survivor_path}, staged)
+            staged.write("\n")
+        staged_path.replace(record)
+    except BaseException:
+        if staged_path is not None:
+            staged_path.unlink(missing_ok=True)
+        raise
+
+
+def _run_lifecycle(action: str, operation) -> LifecycleResult:
+    lifecycle_lock_path().parent.mkdir(parents=True, exist_ok=True)
+    with lifecycle_lock_path().open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return LifecycleResult(action, False, "lifecycle already running")
+        existing = _read_lifecycle_record()
+        if existing is not None:
+            valid = _valid_lifecycle_record(existing)
+            evidence = asdict(capture_config_evidence())
+            return LifecycleResult(
+                action,
+                False,
+                "interrupted lifecycle record requires explicit operator resolution"
+                if valid
+                else "malformed lifecycle record requires explicit operator resolution",
+                evidence,
+                evidence,
+                existing.get("survivor_path") if valid and isinstance(existing.get("survivor_path"), str) else None,
+            )
+        record = lifecycle_record_path()
+        try:
+            _write_lifecycle_record(action, None)
+        except OSError as exc:
+            evidence = asdict(capture_config_evidence())
+            return LifecycleResult(action, False, f"could not create lifecycle record: {exc}", evidence, evidence)
+        result = operation()
+        if not result.ok:
+            try:
+                _write_lifecycle_record(action, result.preserved_recovery_path)
+            except OSError as exc:
+                return LifecycleResult(
+                    action,
+                    False,
+                    f"lifecycle record update failed; operator resolution required: {exc}",
+                    result.config_before,
+                    result.config_after,
+                    result.preserved_recovery_path,
+                )
+            return result
+        try:
+            record.unlink()
+        except OSError as exc:
+            return LifecycleResult(action, False, f"lifecycle completed but could not remove record: {exc}", result.config_before, result.config_after)
+        if record.exists():
+            return LifecycleResult(action, False, "lifecycle completed but record remains", result.config_before, result.config_after)
+        return result
 
 
 # Other transient staging/backup slots used mid-operation by `install`/`rollback`;
@@ -145,15 +221,9 @@ def _clear_pipeline_temp_state() -> CleanupResult:
     unqualified lifecycle success while this reports failure.
     """
     leftover_paths: list[str] = []
-    blocked, blocked_surviving_path = _terminal_blocked_state()
-    if blocked:
-        location = blocked_surviving_path or "ambiguous pipeline-owned survivor slots"
-        return CleanupResult(False, f"terminal BLOCKED state requires operator resolution: {location}")
     for parent in (active_app_path().parent, rollback_app_path().parent):
         for suffix in _TRANSIENT_SLOT_SUFFIXES:
             candidate = parent / f".{APP_NAME}.{suffix}"
-            if blocked and (str(candidate) == blocked_surviving_path or suffix in _TERMINAL_BLOCKED_SURVIVOR_SUFFIXES):
-                continue
             if candidate.exists():
                 shutil.rmtree(candidate, ignore_errors=True)
             if candidate.exists():
@@ -607,7 +677,7 @@ def _replace_directory_content(source: Path, target: Path, backup: Path) -> Repl
     return ReplaceResult(True)
 
 
-def install(candidate: Path) -> LifecycleResult:
+def _install(candidate: Path) -> LifecycleResult:
     """Install/update `candidate` as the active bundle.
 
     Validates any pre-existing active and rollback content before mutation (aborting
@@ -619,8 +689,6 @@ def install(candidate: Path) -> LifecycleResult:
     bundle and returns a structured failure; it never leaves an unmentioned failure or
     a silently broken active bundle in place.
     """
-    if blocked := _blocked_lifecycle_result("install"):
-        return blocked
     config_before = capture_config_evidence()
 
     candidate_validation = validate_static_identity(candidate)
@@ -890,7 +958,7 @@ def _restore_active_from_backup_after_probe_failure(active: Path, backup: Path) 
     )
 
 
-def rollback() -> LifecycleResult:
+def _rollback() -> LifecycleResult:
     """Restore the single known-good rollback bundle over the active bundle.
 
     Validates the existing active bundle's identity, executable, ad-hoc signature,
@@ -909,8 +977,6 @@ def rollback() -> LifecycleResult:
     bundle path (`LifecycleResult.preserved_recovery_path`) instead of being deleted,
     so no recoverable copy of the prior known-good bundle is ever lost.
     """
-    if blocked := _blocked_lifecycle_result("rollback"):
-        return blocked
     config_before = capture_config_evidence()
     rb = rollback_app_path()
     if not rb.exists():
@@ -1067,7 +1133,7 @@ def rollback() -> LifecycleResult:
     )
 
 
-def uninstall() -> LifecycleResult:
+def _uninstall() -> LifecycleResult:
     """Remove the active artifact; report remaining documented local state.
 
     Validates any existing rollback bundle's identity, executable, ad-hoc signature,
@@ -1080,8 +1146,6 @@ def uninstall() -> LifecycleResult:
     probe before removing it, aborting without mutation if it is foreign or malformed
     -- exactly like `install` and `rollback`. Runtime configuration is never touched.
     """
-    if blocked := _blocked_lifecycle_result("uninstall"):
-        return blocked
     config_before = capture_config_evidence()
     active = active_app_path()
     rb = rollback_app_path()
@@ -1111,7 +1175,18 @@ def uninstall() -> LifecycleResult:
                 asdict(config_before),
                 asdict(config_after),
             )
-        shutil.rmtree(active)
+        try:
+            shutil.rmtree(active)
+        except OSError as exc:
+            config_after = capture_config_evidence()
+            assert_config_unchanged(config_before, config_after)
+            return LifecycleResult(
+                "uninstall",
+                False,
+                f"active removal failed: {exc}; remaining state: {json.dumps(_remaining_lifecycle_state())}",
+                asdict(config_before),
+                asdict(config_after),
+            )
         removed = True
     else:
         removed = False
@@ -1140,6 +1215,18 @@ def uninstall() -> LifecycleResult:
     return LifecycleResult(
         "uninstall", True, json.dumps(remaining), asdict(config_before), asdict(config_after)
     )
+
+
+def install(candidate: Path) -> LifecycleResult:
+    return _run_lifecycle("install", lambda: _install(candidate))
+
+
+def rollback() -> LifecycleResult:
+    return _run_lifecycle("rollback", _rollback)
+
+
+def uninstall() -> LifecycleResult:
+    return _run_lifecycle("uninstall", _uninstall)
 
 
 # --- Same-artifact transport verification (task 3.1) ---

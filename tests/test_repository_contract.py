@@ -91,6 +91,7 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("macos14-lifecycle:", workflow)
         self.assertIn("scripts/local_ship.py verify-transport", workflow)
         self.assertIn("scripts/local_ship.py verify-active", workflow)
+        self.assertIn("rm -f \"$HOME/Library/Application Support/io.github.webkitvn.macmouseflow/LocalShip/lifecycle.json\"", workflow)
         self.assertIn("genuine controlled failed-update rollback", workflow)
         self.assertIn("success:success:success:success", workflow)
         self.assertIn("skipped:skipped:skipped:skipped", workflow)

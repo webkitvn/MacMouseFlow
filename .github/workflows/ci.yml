@@ -139,7 +139,11 @@ jobs:
             echo "expected the deliberately broken candidate to fail its canonical-path launch probe" >&2
             exit 1
           fi
+          # The retained record is expected after this deliberate failed update.
+          # CI is the explicit operator only after the canonical active bundle is
+          # independently verified as restored; this is not a lifecycle command.
           python3 scripts/local_ship.py verify-active
+          rm -f "$HOME/Library/Application Support/io.github.webkitvn.macmouseflow/LocalShip/lifecycle.json"
       - name: Exercise update, explicit rollback, and uninstall lifecycle compatibility
         run: |
           set -euo pipefail

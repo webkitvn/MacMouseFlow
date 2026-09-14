@@ -5,6 +5,8 @@ All tests operate under an isolated fake $HOME so no real ~/Applications or
 ~/Library/Application Support state is ever touched.
 """
 
+import fcntl
+import json
 import pathlib
 import plistlib
 import shutil
@@ -53,6 +55,11 @@ class FakeHomeTestCase(unittest.TestCase):
     def tearDown(self):
         self._home_patch.stop()
         self._tmp.cleanup()
+
+    def resolve_lifecycle_record(self):
+        record = local_ship.lifecycle_record_path()
+        if record.exists():
+            record.unlink()
 
 
 class ConfigEvidenceTests(FakeHomeTestCase):
@@ -503,7 +510,7 @@ class LifecycleTests(FakeHomeTestCase):
         fourth = make_bundle(self.candidate_root, name="fourth.app")
         follow_up = local_ship.install(fourth)
         self.assertFalse(follow_up.ok)
-        self.assertIn("terminal BLOCKED state", follow_up.reason)
+        self.assertIn("interrupted lifecycle record", follow_up.reason)
         self.assertEqual(follow_up.preserved_recovery_path, str(surviving))
         self.assertTrue(surviving.exists())
 
@@ -627,6 +634,7 @@ class LifecycleTests(FakeHomeTestCase):
         # before proving self-cleaning via a fresh `uninstall` (a no-op removal that
         # still runs pipeline cleanup).
         shutil.rmtree(rb)
+        self.resolve_lifecycle_record()
         good_uninstall = local_ship.uninstall()
         self.assertTrue(good_uninstall.ok, good_uninstall.reason)
         self.assertFalse(recovery.exists(), "the recovery bundle must not outlive the next success")
@@ -695,9 +703,9 @@ class LifecycleTests(FakeHomeTestCase):
         self.assertFalse(blocked_uninstall.ok)
         self.assertEqual(blocked_uninstall.preserved_recovery_path, str(backup))
 
-        # Operator resolution is intentionally outside the pipeline: after manually
-        # removing the unique surviving known-good backup, automated actions resume.
+        # Operator resolution removes the retained lifecycle record and survivor.
         shutil.rmtree(backup)
+        self.resolve_lifecycle_record()
         shutil.rmtree(rb)
         resolved_uninstall = local_ship.uninstall()
         self.assertTrue(resolved_uninstall.ok, resolved_uninstall.reason)
@@ -707,18 +715,20 @@ class LifecycleTests(FakeHomeTestCase):
         surviving = local_ship.active_app_path().parent / f".{local_ship.APP_NAME}.rollback-backup"
         surviving.parent.mkdir(parents=True)
         shutil.copytree(candidate, surviving)
+        local_ship._write_lifecycle_record("rollback", str(surviving))
         active = local_ship.active_app_path()
         rollback = local_ship.rollback_app_path()
         active_before = active.exists()
         rollback_before = rollback.exists()
         for result in (local_ship.install(candidate), local_ship.rollback(), local_ship.uninstall()):
             self.assertFalse(result.ok)
-            self.assertIn("terminal BLOCKED state", result.reason)
-            self.assertIn("operator resolution is required", result.reason)
+            self.assertIn("interrupted lifecycle record", result.reason)
+            self.assertIn("explicit operator resolution", result.reason)
             self.assertEqual(result.preserved_recovery_path, str(surviving))
         self.assertEqual(active.exists(), active_before)
         self.assertEqual(rollback.exists(), rollback_before)
         self.assertTrue(surviving.exists())
+        self.resolve_lifecycle_record()
 
     def test_nested_triple_failure_stops_without_a_fourth_move(self):
         active = local_ship.active_app_path()
@@ -734,9 +744,7 @@ class LifecycleTests(FakeHomeTestCase):
         self.assertEqual(restore.preserved_recovery_path, str(backup))
         self.assertFalse(lower_value.exists())
         self.assertTrue(backup.exists())
-        blocked = local_ship.uninstall()
-        self.assertFalse(blocked.ok)
-        self.assertEqual(blocked.preserved_recovery_path, str(backup))
+        self.assertFalse(local_ship.lifecycle_record_path().exists())
 
     def test_nested_triple_failure_cleanup_failure_makes_no_unique_claim(self):
         candidate = make_bundle(self.candidate_root, name="candidate.app")
@@ -763,20 +771,93 @@ class LifecycleTests(FakeHomeTestCase):
         self.assertIn("terminal BLOCKED integrity failure", result.reason)
         self.assertTrue(backup.exists())
         self.assertTrue(lower_value.exists())
-        blocked = local_ship.uninstall()
-        self.assertFalse(blocked.ok)
-        self.assertIsNone(blocked.preserved_recovery_path)
+        self.assertFalse(local_ship.lifecycle_record_path().exists())
 
-    def test_ambiguous_survivors_fail_closed(self):
-        first = local_ship.active_app_path().parent / f".{local_ship.APP_NAME}.rollback-backup"
-        second = local_ship.rollback_app_path().parent / f".{local_ship.APP_NAME}.rollback-old"
-        first.mkdir(parents=True)
-        second.mkdir(parents=True)
-
-        result = local_ship.uninstall()
+    def test_lifecycle_record_blocks_interrupted_and_malformed_state(self):
+        candidate = make_bundle(self.candidate_root, name="candidate.app")
+        record = local_ship.lifecycle_record_path()
+        record.parent.mkdir(parents=True)
+        record.write_text("{broken")
+        result = local_ship.install(candidate)
         self.assertFalse(result.ok)
+        self.assertIn("malformed lifecycle record", result.reason)
+        self.assertFalse(local_ship.active_app_path().exists())
+
+        record.write_text(json.dumps({"operation": "other", "survivor_path": "/tmp/outside"}))
+        result = local_ship.install(candidate)
+        self.assertFalse(result.ok)
+        self.assertIn("malformed lifecycle record", result.reason)
         self.assertIsNone(result.preserved_recovery_path)
-        self.assertIn("ambiguous pipeline-owned survivor slots", result.reason)
+
+    def test_lifecycle_lock_contention_refuses_without_mutation(self):
+        candidate = make_bundle(self.candidate_root, name="candidate.app")
+        local_ship.lifecycle_lock_path().parent.mkdir(parents=True)
+        with local_ship.lifecycle_lock_path().open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = local_ship.install(candidate)
+        self.assertFalse(result.ok)
+        self.assertIn("lifecycle already running", result.reason)
+        self.assertFalse(local_ship.active_app_path().exists())
+
+    def test_lifecycle_record_write_cleans_staged_file_on_dump_error(self):
+        record_dir = local_ship.lifecycle_record_path().parent
+        with mock.patch.object(local_ship.json, "dump", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                local_ship._write_lifecycle_record("install", None)
+        self.assertFalse(local_ship.lifecycle_record_path().exists())
+        self.assertEqual(list(record_dir.glob("tmp*")), [])
+
+    def test_lifecycle_record_write_failures_are_structured(self):
+        candidate = make_bundle(self.candidate_root, name="candidate.app")
+        with mock.patch.object(local_ship, "_write_lifecycle_record", side_effect=OSError("record denied")):
+            create_result = local_ship.install(candidate)
+        self.assertFalse(create_result.ok)
+        self.assertIn("could not create lifecycle record", create_result.reason)
+        self.assertFalse(local_ship.active_app_path().exists())
+
+        with mock.patch.object(local_ship, "_write_lifecycle_record", side_effect=[None, OSError("update denied")]):
+            update_result = local_ship._run_lifecycle(
+                "install", lambda: local_ship.LifecycleResult("install", False, "operation failed")
+            )
+        self.assertFalse(update_result.ok)
+        self.assertIn("lifecycle record update failed", update_result.reason)
+
+    def test_record_update_failure_keeps_immediate_triple_survivor(self):
+        survivor = local_ship.rollback_app_path().parent / f".{local_ship.APP_NAME}.rollback-old"
+        survivor.parent.mkdir(parents=True)
+        survivor.mkdir()
+        original = local_ship.LifecycleResult("install", False, "triple failure", preserved_recovery_path=str(survivor))
+        real_write = local_ship._write_lifecycle_record
+        calls = {"count": 0}
+
+        def fail_update(operation, survivor_path):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise OSError("update denied")
+            real_write(operation, survivor_path)
+
+        with mock.patch.object(local_ship, "_write_lifecycle_record", side_effect=fail_update):
+            result = local_ship._run_lifecycle("install", lambda: original)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.preserved_recovery_path, str(survivor))
+        self.assertTrue(survivor.exists())
+        self.assertTrue(local_ship.lifecycle_record_path().exists())
+        later = local_ship.install(make_bundle(self.candidate_root, name="candidate.app"))
+        self.assertFalse(later.ok)
+        self.assertIsNone(later.preserved_recovery_path)
+        self.assertIn("interrupted lifecycle record", later.reason)
+
+    def test_uninstall_rmtree_failure_reports_observed_state(self):
+        candidate = make_bundle(self.candidate_root, name="candidate.app")
+        self.assertTrue(local_ship.install(candidate).ok)
+        active = local_ship.active_app_path()
+        real_rmtree = shutil.rmtree
+        with mock.patch.object(local_ship.shutil, "rmtree", side_effect=lambda path, *a, **k: (_ for _ in ()).throw(OSError("denied")) if pathlib.Path(path) == active else real_rmtree(path, *a, **k)):
+            result = local_ship.uninstall()
+        self.assertFalse(result.ok)
+        self.assertIn("active removal failed", result.reason)
+        self.assertIn("active_bundle_present", result.reason)
+        self.assertIsNone(result.preserved_recovery_path)
 
     def test_install_rejects_malformed_candidate_without_touching_active(self):
         good_active = make_bundle(self.candidate_root, name=local_ship.APP_NAME)
@@ -1065,6 +1146,7 @@ class LifecycleTests(FakeHomeTestCase):
         # lifecycle action that happens to be. `active` is currently missing, so
         # this next install runs as a first install (nothing to retain).
         third = make_bundle(self.candidate_root, name="third.app")
+        self.resolve_lifecycle_record()
         good_install = local_ship.install(third)
         self.assertTrue(good_install.ok, good_install.reason)
         self.assertFalse(recovery.exists(), "the recovery bundle must not outlive the next success")
@@ -1098,6 +1180,7 @@ class LifecycleTests(FakeHomeTestCase):
         # caller's side): the lifecycle action must not report unqualified success
         # while that recovery bundle is still on disk.
         fourth = make_bundle(self.candidate_root, name="fourth.app")
+        self.resolve_lifecycle_record()
         real_rmtree = shutil.rmtree
 
         def flaky_rmtree(path, *args, **kwargs):
@@ -1118,6 +1201,7 @@ class LifecycleTests(FakeHomeTestCase):
 
         # A subsequent install, with real cleanup restored, must actually clear it.
         fifth = make_bundle(self.candidate_root, name="fifth.app")
+        self.resolve_lifecycle_record()
         follow_up = local_ship.install(fifth)
         self.assertTrue(follow_up.ok, follow_up.reason)
         self.assertFalse(recovery.exists())
