@@ -76,6 +76,71 @@ def terminal_recovery_path() -> Path:
     return local_ship_dir() / "terminal-recovery" / APP_NAME
 
 
+def terminal_blocked_marker_path() -> Path:
+    """Persistent operator-resolution gate for a true triple filesystem failure."""
+    return local_ship_dir() / "terminal-blocked.json"
+
+
+# These are the only ad hoc slots a triple failure can leave holding known-good
+# content. Their presence is a fail-safe BLOCKED signal even if marker persistence
+# itself failed; ordinary lifecycle paths remove them before reporting success.
+_TERMINAL_BLOCKED_SURVIVOR_SUFFIXES = ("rollback-old", "rollback-backup")
+
+
+def _terminal_blocked_state() -> tuple[bool, Optional[str], str]:
+    marker = terminal_blocked_marker_path()
+    allowed = {
+        parent / f".{APP_NAME}.{suffix}"
+        for parent in (active_app_path().parent, rollback_app_path().parent)
+        for suffix in _TERMINAL_BLOCKED_SURVIVOR_SUFFIXES
+    }
+    survivors = [path for path in allowed if path.exists()]
+    marker_path: Optional[Path] = None
+    marker_error = ""
+    if marker.exists():
+        try:
+            value = json.loads(marker.read_text())["surviving_path"]
+            candidate = Path(value) if isinstance(value, str) else None
+            if candidate in allowed and candidate.exists():
+                marker_path = candidate
+            else:
+                marker_error = "marker path is stale or outside bounded survivor slots"
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            marker_error = "marker content is malformed"
+
+    if len(survivors) == 1:
+        return True, str(survivors[0]), marker_error
+    if marker.exists() or survivors:
+        detail = marker_error or "multiple bounded survivor slots exist"
+        return True, None, f"marker-integrity failure: {detail}"
+    return False, None, ""
+
+
+def _record_terminal_blocked_state(surviving_path: Path) -> None:
+    marker = terminal_blocked_marker_path()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"surviving_path": str(surviving_path)}) + "\n")
+    except OSError:
+        # ponytail: deterministic survivor-slot detection blocks until operator resolution.
+        pass
+
+
+def _blocked_lifecycle_result(action: str) -> Optional[LifecycleResult]:
+    blocked, surviving_path, integrity_reason = _terminal_blocked_state()
+    if not blocked:
+        return None
+    location = surviving_path or "an unresolved pipeline-owned survivor slot"
+    detail = f"; {integrity_reason}" if integrity_reason else ""
+    return LifecycleResult(
+        action,
+        False,
+        f"terminal BLOCKED state: surviving pipeline-owned bundle remains at {location}{detail}; "
+        "operator resolution is required before automated lifecycle actions can resume",
+        preserved_recovery_path=surviving_path,
+    )
+
+
 # Other transient staging/backup slots used mid-operation by `install`/`rollback`;
 # always disposable and normally cleaned up within the same call, but swept
 # defensively (along with `terminal_recovery_path()`) on the next successful
@@ -110,9 +175,16 @@ def _clear_pipeline_temp_state() -> CleanupResult:
     unqualified lifecycle success while this reports failure.
     """
     leftover_paths: list[str] = []
+    blocked, blocked_surviving_path, integrity_reason = _terminal_blocked_state()
+    if blocked:
+        location = blocked_surviving_path or "an unresolved pipeline-owned survivor slot"
+        detail = f"; {integrity_reason}" if integrity_reason else ""
+        return CleanupResult(False, f"terminal BLOCKED state requires operator resolution: {location}{detail}")
     for parent in (active_app_path().parent, rollback_app_path().parent):
         for suffix in _TRANSIENT_SLOT_SUFFIXES:
             candidate = parent / f".{APP_NAME}.{suffix}"
+            if blocked and (str(candidate) == blocked_surviving_path or suffix in _TERMINAL_BLOCKED_SURVIVOR_SUFFIXES):
+                continue
             if candidate.exists():
                 shutil.rmtree(candidate, ignore_errors=True)
             if candidate.exists():
@@ -545,18 +617,18 @@ def _replace_directory_content(source: Path, target: Path, backup: Path) -> Repl
                     # failed. No further relocation is attempted; the content
                     # simply remains at its existing, pipeline-owned surviving path
                     # (`backup`, never itself moved or deleted by this attempt).
+                    _record_terminal_blocked_state(backup)
                     recovery_path = str(backup)
                     triple_failure_note = (
                         f"; additionally failed to relocate it to the terminal recovery path "
-                        f"({recovery_exc}); no further relocation attempt will be made"
+                        f"({recovery_exc}); no further relocation attempt will be made; terminal BLOCKED "
+                        f"state requires operator resolution"
                     )
                 return ReplaceResult(
                     False,
                     f"commit failed ({commit_exc}) and automatic restoration also failed "
                     f"({restore_exc}); {target} is MISSING, not preserved; the prior known-good "
-                    f"bundle remains safely available at {recovery_path}{triple_failure_note}, which "
-                    f"must be removed and its removal verified by the next successful lifecycle "
-                    f"action",
+                    f"bundle remains safely available at {recovery_path}{triple_failure_note}",
                     recovery_path,
                 )
             return ReplaceResult(
@@ -579,6 +651,8 @@ def install(candidate: Path) -> LifecycleResult:
     bundle and returns a structured failure; it never leaves an unmentioned failure or
     a silently broken active bundle in place.
     """
+    if blocked := _blocked_lifecycle_result("install"):
+        return blocked
     config_before = capture_config_evidence()
 
     candidate_validation = validate_static_identity(candidate)
@@ -808,23 +882,16 @@ def _restore_active_from_backup_after_probe_failure(active: Path, backup: Path) 
             shutil.rmtree(recovery)
         shutil.move(str(backup), str(recovery))
     except OSError as exc:
-        # A true triple filesystem failure (design.md: "Resolution for a true triple
-        # filesystem failure"): the commit move failed, the automatic restoration
-        # move also failed, AND this relocation of the true known-good bundle into
-        # the terminal recovery path has now also failed. No further relocation is
-        # attempted -- the content simply remains at its existing, pipeline-owned
-        # surviving path (`backup`, never itself moved or deleted by this attempt).
-        # This is reported as that exact surviving path, never as the canonical
-        # target or the canonical terminal recovery bundle being preserved; `backup`
-        # must still be removed and its removal verified by the next successful
-        # lifecycle action, exactly like the terminal recovery bundle.
+        # The third failure leaves the known-good bundle untouched at `backup` and
+        # terminally blocks further automated lifecycle mutation.
+        _record_terminal_blocked_state(backup)
         return ReplaceResult(
             False,
             f"the post-rollback canonical-path probe failed and automatic restoration hit a double "
             f"filesystem failure ({result.reason}); additionally failed to relocate the known-good "
             f"bundle from {backup} to the terminal recovery path ({exc}); no further relocation "
-            f"attempt will be made; it remains safely available, untouched, at {backup}, which must "
-            f"be removed and its removal verified by the next successful lifecycle action",
+            f"attempt will be made; terminal BLOCKED state requires operator resolution; it remains "
+            f"safely available, untouched, at {backup}",
             str(backup),
         )
     return ReplaceResult(
@@ -856,6 +923,8 @@ def rollback() -> LifecycleResult:
     bundle path (`LifecycleResult.preserved_recovery_path`) instead of being deleted,
     so no recoverable copy of the prior known-good bundle is ever lost.
     """
+    if blocked := _blocked_lifecycle_result("rollback"):
+        return blocked
     config_before = capture_config_evidence()
     rb = rollback_app_path()
     if not rb.exists():
@@ -1025,6 +1094,8 @@ def uninstall() -> LifecycleResult:
     probe before removing it, aborting without mutation if it is foreign or malformed
     -- exactly like `install` and `rollback`. Runtime configuration is never touched.
     """
+    if blocked := _blocked_lifecycle_result("uninstall"):
+        return blocked
     config_before = capture_config_evidence()
     active = active_app_path()
     rb = rollback_app_path()

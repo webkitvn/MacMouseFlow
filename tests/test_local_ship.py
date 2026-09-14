@@ -5,6 +5,7 @@ All tests operate under an isolated fake $HOME so no real ~/Applications or
 ~/Library/Application Support state is ever touched.
 """
 
+import json
 import pathlib
 import plistlib
 import shutil
@@ -500,13 +501,14 @@ class LifecycleTests(FakeHomeTestCase):
         self.assertEqual(surviving_sha, first_executable_sha)
         self.assertTrue(local_ship.active_app_path().exists())
 
-        # The surviving path is not a new slot: it must be removed and its removal
-        # verified by the next successful lifecycle action, exactly like the
-        # terminal recovery bundle.
+        marker = local_ship.terminal_blocked_marker_path()
+        self.assertTrue(marker.exists())
         fourth = make_bundle(self.candidate_root, name="fourth.app")
         follow_up = local_ship.install(fourth)
-        self.assertTrue(follow_up.ok, follow_up.reason)
-        self.assertFalse(surviving.exists())
+        self.assertFalse(follow_up.ok)
+        self.assertIn("terminal BLOCKED state", follow_up.reason)
+        self.assertEqual(follow_up.preserved_recovery_path, str(surviving))
+        self.assertTrue(surviving.exists())
 
     def test_rollback_post_restoration_probe_failure_triggers_automatic_restoration(self):
         good = make_bundle(self.candidate_root, name="good.app")
@@ -688,15 +690,111 @@ class LifecycleTests(FakeHomeTestCase):
         backup_sha = local_ship.sha256_file(backup / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
         self.assertEqual(backup_sha, good_executable_sha)
 
-        # The surviving path is not a new slot: it must be removed and its removal
-        # verified by the next successful lifecycle action, exactly like the
-        # terminal recovery bundle. `active` is missing and the rollback bundle was
-        # deliberately corrupted for this test's own setup, so clear it before
-        # proving self-cleaning via `uninstall`.
+        marker = local_ship.terminal_blocked_marker_path()
+        self.assertTrue(marker.exists())
+        blocked_uninstall = local_ship.uninstall()
+        self.assertFalse(blocked_uninstall.ok)
+        self.assertIn("terminal BLOCKED state", blocked_uninstall.reason)
+        self.assertEqual(blocked_uninstall.preserved_recovery_path, str(backup))
+        self.assertTrue(backup.exists())
+
+        # Operator resolution is intentionally outside the pipeline: after manually
+        # removing both the surviving bundle and marker, automated actions resume.
+        shutil.rmtree(backup)
+        marker.unlink()
         shutil.rmtree(rb)
-        good_uninstall = local_ship.uninstall()
-        self.assertTrue(good_uninstall.ok, good_uninstall.reason)
-        self.assertFalse(backup.exists(), "the surviving path must not outlive the next success")
+        resolved_uninstall = local_ship.uninstall()
+        self.assertTrue(resolved_uninstall.ok, resolved_uninstall.reason)
+
+    def test_all_lifecycle_actions_refuse_until_operator_resolves_terminal_block(self):
+        candidate = make_bundle(self.candidate_root, name="candidate.app")
+        surviving = local_ship.active_app_path().parent / f".{local_ship.APP_NAME}.rollback-backup"
+        surviving.parent.mkdir(parents=True)
+        shutil.copytree(candidate, surviving)
+        local_ship._record_terminal_blocked_state(surviving)
+
+        active = local_ship.active_app_path()
+        rollback = local_ship.rollback_app_path()
+        active_before = active.exists()
+        rollback_before = rollback.exists()
+        for result in (local_ship.install(candidate), local_ship.rollback(), local_ship.uninstall()):
+            self.assertFalse(result.ok)
+            self.assertIn("terminal BLOCKED state", result.reason)
+            self.assertIn("operator resolution is required", result.reason)
+            self.assertEqual(result.preserved_recovery_path, str(surviving))
+        self.assertEqual(active.exists(), active_before)
+        self.assertEqual(rollback.exists(), rollback_before)
+        self.assertTrue(surviving.exists())
+
+    def test_marker_write_failure_blocks_by_deterministic_survivor_slot(self):
+        candidate = make_bundle(self.candidate_root, name="candidate.app")
+        surviving = local_ship.rollback_app_path().parent / f".{local_ship.APP_NAME}.rollback-old"
+        surviving.parent.mkdir(parents=True)
+        shutil.copytree(candidate, surviving)
+        with mock.patch.object(pathlib.Path, "write_text", side_effect=OSError("read-only marker directory")):
+            local_ship._record_terminal_blocked_state(surviving)
+
+        self.assertFalse(local_ship.terminal_blocked_marker_path().exists())
+        result = local_ship.install(candidate)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.preserved_recovery_path, str(surviving))
+        self.assertTrue(surviving.exists())
+        self.assertFalse(local_ship._clear_pipeline_temp_state().ok)
+        self.assertTrue(surviving.exists())
+
+    def test_malformed_marker_blocks_with_recoverable_survivor_path(self):
+        candidate = make_bundle(self.candidate_root, name="candidate.app")
+        surviving = local_ship.active_app_path().parent / f".{local_ship.APP_NAME}.rollback-backup"
+        surviving.parent.mkdir(parents=True)
+        shutil.copytree(candidate, surviving)
+        marker = local_ship.terminal_blocked_marker_path()
+        marker.parent.mkdir(parents=True)
+        marker.write_text("{not json")
+
+        result = local_ship.uninstall()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.preserved_recovery_path, str(surviving))
+        self.assertNotIn(str(marker), result.reason)
+        self.assertTrue(surviving.exists())
+
+    def test_stale_marker_fails_closed_without_survivor_path(self):
+        marker = local_ship.terminal_blocked_marker_path()
+        stale = local_ship.rollback_app_path().parent / f".{local_ship.APP_NAME}.rollback-old"
+        marker.parent.mkdir(parents=True)
+        marker.write_text('{"surviving_path": ' + json.dumps(str(stale)) + "}\n")
+
+        result = local_ship.uninstall()
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.preserved_recovery_path)
+        self.assertIn("marker-integrity failure", result.reason)
+
+    def test_out_of_scope_marker_fails_closed_without_survivor_path(self):
+        marker = local_ship.terminal_blocked_marker_path()
+        marker.parent.mkdir(parents=True)
+        marker.write_text('{"surviving_path": "/tmp/not-a-pipeline-survivor"}\n')
+
+        result = local_ship.uninstall()
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.preserved_recovery_path)
+        self.assertIn("marker-integrity failure", result.reason)
+
+    def test_conflicting_marker_reports_actual_bounded_survivor(self):
+        candidate = make_bundle(self.candidate_root, name="candidate.app")
+        survivor = local_ship.rollback_app_path().parent / f".{local_ship.APP_NAME}.rollback-old"
+        survivor.parent.mkdir(parents=True)
+        shutil.copytree(candidate, survivor)
+        marker = local_ship.terminal_blocked_marker_path()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps({"surviving_path": str(survivor.parent / f".{local_ship.APP_NAME}.rollback-backup")})
+            + "\n"
+        )
+
+        result = local_ship.uninstall()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.preserved_recovery_path, str(survivor))
+        self.assertIn("marker path is stale", result.reason)
+        self.assertTrue(survivor.exists())
 
     def test_install_rejects_malformed_candidate_without_touching_active(self):
         good_active = make_bundle(self.candidate_root, name=local_ship.APP_NAME)
