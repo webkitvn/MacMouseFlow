@@ -4,17 +4,22 @@ import CoreGraphics
 import Foundation
 
 public enum ScrollAdapter {
-    public static func process(_ event: CGEvent, engine: PointerInputEngine) {
-        guard event.type == .scrollWheel,
-              event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0,
-              let decision = engine.evaluate(
-                horizontal: event.getIntegerValueField(.scrollWheelEventDeltaAxis2),
-                vertical: event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-              ),
-              case let .replace(horizontal, vertical) = decision
-        else { return }
+    public static func evaluate(horizontal: Int64, vertical: Int64, engine: PointerInputEngine) -> InputDecision? {
+        engine.evaluate(horizontal: horizontal, vertical: vertical)
+    }
+
+    public static func apply(_ event: CGEvent, decision: InputDecision) {
+        guard case let .replace(horizontal, vertical) = decision else { return }
         event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: vertical)
         event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: horizontal)
+    }
+
+    @discardableResult public static func process(_ event: CGEvent, engine: PointerInputEngine) -> UInt8 {
+        guard event.type == .scrollWheel, event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else { return 0 }
+        guard let decision = evaluate(horizontal: event.getIntegerValueField(.scrollWheelEventDeltaAxis2), vertical: event.getIntegerValueField(.scrollWheelEventDeltaAxis1), engine: engine) else { return 2 }
+        apply(event, decision: decision)
+        if case .preserve = decision { return 0 }
+        return 1
     }
 }
 
@@ -22,6 +27,7 @@ final class TapState: @unchecked Sendable {
     // This lock serializes public lifecycle calls only. The callback never takes it.
     private let lock = NSLock()
     let engine: PointerInputEngine
+    let trace = TracePipeline()
     let ready = DispatchSemaphore(value: 0)
     let stopped = DispatchSemaphore(value: 0)
     private var lifecycle = Lifecycle.idle
@@ -53,11 +59,13 @@ final class TapState: @unchecked Sendable {
             callback: ScrollRuntime.callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
+            trace?.lifecycle(2)
             ready.signal()
             complete()
             return
         }
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            trace?.lifecycle(3)
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
             ready.signal()
@@ -119,8 +127,14 @@ final class TapState: @unchecked Sendable {
         lock.unlock()
     }
 
-    func disabledByTimeout() { timeoutCount += 1 }
-    func reenable() { if let tap { CGEvent.tapEnable(tap: tap, enable: true) } }
+    func disabledByTimeout() {
+        timeoutCount += 1
+        trace?.callbackLifecycle(4)
+    }
+    func reenable() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+        trace?.callbackLifecycle(5)
+    }
 
     func complete() {
         lock.lock()
@@ -130,6 +144,8 @@ final class TapState: @unchecked Sendable {
         }
         lifecycle = .finished
         runLoop = nil
+        trace?.lifecycle(1)
+        trace?.close()
         lock.unlock()
         stopped.signal()
     }
@@ -143,6 +159,10 @@ final class TapState: @unchecked Sendable {
     @_spi(Benchmark) public func invoke(_ type: CGEventType, event: CGEvent) {
         _ = ScrollRuntime.callback(OpaquePointer(bitPattern: 0x1)!, type, event, Unmanaged.passUnretained(state).toOpaque())
     }
+
+    deinit { state.complete() }
+
+    @_spi(Benchmark) public func close() { state.complete() }
 
     @_spi(Benchmark) public func setReverse(_ reverse: Bool) -> Bool {
         reverse ? state.engine.setReverseDirection() : state.engine.setSystemDirection()
@@ -186,6 +206,7 @@ public final class ScrollRuntime {
         guard !joined else { return }
         let request = state.cancelAndRunLoop()
         guard request.join else {
+            state.complete()
             joined = true
             return
         }
@@ -214,7 +235,24 @@ public final class ScrollRuntime {
             if type == .tapDisabledByTimeout { state.disabledByTimeout() }
             state.reenable()
         } else {
-            ScrollAdapter.process(event, engine: state.engine)
+            guard let trace = state.trace else {
+                ScrollAdapter.process(event, engine: state.engine)
+                return Unmanaged.passUnretained(event)
+            }
+            let start = DispatchTime.now().uptimeNanoseconds
+            let lineBased = type == .scrollWheel && event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0
+            let horizontal = lineBased ? event.getIntegerValueField(.scrollWheelEventDeltaAxis2) : 0
+            let vertical = lineBased ? event.getIntegerValueField(.scrollWheelEventDeltaAxis1) : 0
+            let extracted = DispatchTime.now().uptimeNanoseconds
+            let decision = lineBased ? ScrollAdapter.evaluate(horizontal: horizontal, vertical: vertical, engine: state.engine) : nil
+            let evaluated = DispatchTime.now().uptimeNanoseconds
+            if let decision { ScrollAdapter.apply(event, decision: decision) }
+            let applied = DispatchTime.now().uptimeNanoseconds
+            let code: UInt8
+            if decision == nil { code = lineBased ? 2 : 0 }
+            else if case .preserve? = decision { code = 0 }
+            else { code = 1 }
+            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: code == 1 ? 1 : 0, reason: lineBased ? (code == 1 ? 2 : (code == 2 ? 3 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start)
         }
         return Unmanaged.passUnretained(event)
     }
