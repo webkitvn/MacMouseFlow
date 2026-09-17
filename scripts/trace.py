@@ -34,19 +34,25 @@ def validate(v,run,current):
   if not((current and set(v)==current_keys and exact(v.get("seq"),int) and v["seq"]>0 and exact(v.get("t_ns"),int) and v["t_ns"]>=0 and v["level"]=="warn" and v["component"]=="observability") or (not current and set(v)==historic_keys and v["level"]=="warning" and v["component"]=="trace")) or not exact(v.get("drop_count"),int) or v["drop_count"]<1:fail("record violates trace schema/privacy allowlist")
  elif v.get("name")=="input.pipeline":
   keys={"schema_version","run_id","seq","t_ns","level","component","name","input_seq","horizontal_lines","vertical_lines","granularity","decision","native_outcome","reason_code","config_revision","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"};vocabulary=("trace","native.input") if current else ("debug","input")
-  if set(v)!=keys or not(all(exact(v[k],int) and v[k]>=0 for k in {"seq","t_ns","input_seq","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"}) and exact(v["horizontal_lines"],int) and exact(v["vertical_lines"],int) and (v["level"],v["component"]) == vocabulary and v["granularity"] in {"line_based","pixel_based"} and v["decision"] in {"preserve","replace","engine_unavailable"} and v["native_outcome"] in {"preserved","applied"} and v["reason_code"] in {"not_line_based","preserve","replace","engine_unavailable"} and v["config_revision"] is None):fail("record violates trace schema/privacy allowlist")
+  valid={("preserve","preserved","not_line_based"),("preserve","preserved","preserve"),("preserve","preserved","engine_unavailable"),("replace","applied","replace")}
+  if set(v)!=keys or not(all(exact(v[k],int) and v[k]>=0 for k in {"seq","t_ns","input_seq","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"}) and exact(v["horizontal_lines"],int) and exact(v["vertical_lines"],int) and (v["level"],v["component"]) == vocabulary and v["granularity"] in {"line_based","pixel_based"} and (v["decision"],v["native_outcome"],v["reason_code"]) in valid and v["config_revision"] is None):fail("record violates trace schema/privacy allowlist")
  else:fail("record violates trace schema/privacy allowlist")
  return v
+def ordered(v,last):
+ if "seq" in v:
+  if v["seq"]<=last[0] or v.get("name")=="input.pipeline" and v["input_seq"]<=last[1]:fail("record violates trace ordering")
+  last[0]=v["seq"]
+  if v.get("name")=="input.pipeline":last[1]=v["input_seq"]
 def records(b):
- current=manifest(b)
+ current=manifest(b);last=[0,0]
  for p in segments(b):
   with p.open() as f:
    while line:=f.readline():
     if not line.endswith("\n"):break
-    try:yield validate(json.loads(line),b.name,current)
+    try:r=validate(json.loads(line),b.name,current);ordered(r,last);yield r
     except json.JSONDecodeError:fail("invalid completed JSONL record")
 def tail(b):
- offsets={}
+ offsets={};last=[0,0]
  while True:
   current=manifest(b)
   for p in segments(b):
@@ -56,7 +62,7 @@ def tail(b):
      offset=f.tell(); line=f.readline()
      if not line:break
      if not line.endswith("\n"): f.seek(offset); break
-     try:validate(json.loads(line),b.name,current)
+     try:r=validate(json.loads(line),b.name,current);ordered(r,last)
      except json.JSONDecodeError:fail("invalid completed JSONL record")
      print(line,end="",flush=True)
     offsets[p]=f.tell()

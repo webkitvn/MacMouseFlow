@@ -248,11 +248,10 @@ public final class ScrollRuntime {
             let evaluated = DispatchTime.now().uptimeNanoseconds
             if let decision { ScrollAdapter.apply(event, decision: decision) }
             let applied = DispatchTime.now().uptimeNanoseconds
+            let unavailable = lineBased && decision == nil
             let code: UInt8
-            if decision == nil { code = lineBased ? 2 : 0 }
-            else if case .preserve? = decision { code = 0 }
-            else { code = 1 }
-            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: code == 1 ? 1 : 0, reason: lineBased ? (code == 1 ? 2 : (code == 2 ? 3 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start)
+            if case .replace? = decision { code = 1 } else { code = 0 }
+            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: code == 1 ? 1 : 0, reason: lineBased ? (unavailable ? 3 : (code == 1 ? 2 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start)
         }
         return Unmanaged.passUnretained(event)
     }

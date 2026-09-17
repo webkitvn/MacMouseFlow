@@ -13,6 +13,24 @@ class TraceTests(unittest.TestCase):
  def test_rejects_wrong_scalar_type(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);r=self.record();r["seq"]="1";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"typed"));self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)
+ def test_rejects_duplicate_sequence_across_segments(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);r=self.record();(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");(b/"trace-1.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"ordered"));self.assertEqual(x.returncode,2);self.assertIn("ordering",x.stderr)
+ def test_rejects_backward_input_sequence(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);first=self.record();second=self.record();second["seq"]=2;second["input_seq"]=0;(b/"trace-0.jsonl").write_text(json.dumps(first)+"\n"+json.dumps(second)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"ordered"));self.assertEqual(x.returncode,2);self.assertIn("ordering",x.stderr)
+ def test_accepts_engine_unavailable_as_preserve_reason(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);r=self.record();r["decision"]="preserve";r["reason_code"]="engine_unavailable";r["native_outcome"]="preserved";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"failure"));self.assertEqual(x.returncode,0,x.stderr)
+ def test_rejects_suppress(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);r=self.record();r["decision"]="suppress";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"suppress"));self.assertEqual(x.returncode,2)
+ def test_rejects_contradictory_decision_tuples(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);r=self.record();r["native_outcome"]="preserved";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"replace"));self.assertEqual(x.returncode,2)
+   r=self.record();r["reason_code"]="engine_unavailable";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"failure"));self.assertEqual(x.returncode,2)
+   r=self.record();r["decision"]="preserve";r["native_outcome"]="applied";r["reason_code"]="preserve";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"outcome"));self.assertEqual(x.returncode,2)
+   r=self.record();r["decision"]="preserve";r["native_outcome"]="preserved";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"reason"));self.assertEqual(x.returncode,2)
  def test_rejects_malformed_run_start_utc(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);m=json.loads((b/"manifest.json").read_text());m["run_start_utc"]="Z";(b/"manifest.json").write_text(json.dumps(m));x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"invalid"));self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)

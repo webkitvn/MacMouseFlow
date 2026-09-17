@@ -1,4 +1,5 @@
 import CPointerInput
+import CoreFoundation
 import Foundation
 import os
 
@@ -225,14 +226,28 @@ final class TracePipeline: @unchecked Sendable {
     }
     private func pruneOldRuns(reserving bytes: Int) {
         let runs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])) ?? []
-        for run in runs.filter({ !TraceStore.shared.active.contains($0) }).sorted(by: { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) < ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }) where TraceStore.shared.bytes[root, default: 0] + bytes > traceStoreLimit {
+        for run in runs.filter({ !TraceStore.shared.active.contains($0) && ownsTraceBundle($0) }).sorted(by: { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) < ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }) where TraceStore.shared.bytes[root, default: 0] + bytes > traceStoreLimit {
             let old = directorySize(run)
             if (try? FileManager.default.removeItem(at: run)) != nil { TraceStore.shared.bytes[root] = max(0, TraceStore.shared.bytes[root, default: 0] - old) }
         }
     }
+    private func ownsTraceBundle(_ run: URL) -> Bool {
+        let path = run.appendingPathComponent("manifest.json")
+        guard (try? path.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true, let data = try? Data(contentsOf: path), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any], integer(manifest["schema_version"]) == 1, manifest["run_id"] as? String == run.lastPathComponent, (integer(manifest["started_monotonic_ns"]) ?? -1) >= 0, boolean(manifest["clean_shutdown"]), (integer(manifest["drop_count"]) ?? -1) >= 0, boolean(manifest["writer_failed"]) else { return false }
+        let historic = Set(["schema_version", "run_id", "started_monotonic_ns", "clean_shutdown", "drop_count", "writer_failed"])
+        let current = historic.union(["run_start_utc"])
+        guard Set(manifest.keys) == historic || Set(manifest.keys) == current else { return false }
+        return Set(manifest.keys) == historic || (manifest["run_start_utc"] as? String).flatMap { $0.hasSuffix("Z") ? ISO8601DateFormatter().date(from: $0) : nil } != nil
+    }
+    private func boolean(_ value: Any?) -> Bool { guard let value = value as? NSNumber else { return false }; return CFGetTypeID(value) == CFBooleanGetTypeID() }
+    private func integer(_ value: Any?) -> Int64? {
+        guard let value = value as? NSNumber, CFGetTypeID(value) == CFNumberGetTypeID(), !CFNumberIsFloatType(value) else { return nil }
+        var result: Int64 = 0
+        return CFNumberGetValue(value, .sInt64Type, &result) ? result : nil
+    }
     private func directorySize(_ url: URL) -> Int { guard let entries = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }; return entries.reduce(0) { $0 + ((try? ( $1 as? URL)?.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) } }
 }
-private func decisionName(_ value: UInt8) -> String { ["preserve", "replace", "engine_unavailable"][Int(value)] }
+private func decisionName(_ value: UInt8) -> String { ["preserve", "replace"][Int(value)] }
 private func outcomeName(_ value: UInt8) -> String { ["preserved", "applied"][Int(value)] }
 private func lifecycleName(_ value: UInt8) -> String { ["run.start", "run.stop", "tap.failure", "source.failure", "tap.timeout", "tap.reenabled", "writer_failed"][Int(value)] }
 private func lifecycleLevel(_ value: UInt8) -> String { ["info", "info", "error", "error", "warn", "info", "error"][Int(value)] }

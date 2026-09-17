@@ -42,13 +42,18 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             on_root = root / "on"
             stale = on_root / "stale"
             stale.mkdir(parents=True)
+            (stale / "manifest.json").write_text(json.dumps({"schema_version": 1, "run_id": "stale", "started_monotonic_ns": 0, "clean_shutdown": True, "drop_count": 0, "writer_failed": False}))
             with (stale / "trace-0.jsonl").open("wb") as trace:
                 trace.truncate(64 * 1024 * 1024 - 3_000)
+            unrelated = on_root / "keep"
+            unrelated.mkdir()
+            (unrelated / "manifest.json").write_text(json.dumps({"schema_version": True, "run_id": "keep", "started_monotonic_ns": False, "clean_shutdown": 1, "drop_count": True, "writer_failed": 0}))
             on = self.benchmark(on_root, "1")
             self.assertEqual(on.returncode, 0, on.stderr)
-            manifests = list(on_root.glob("*/manifest.json"))
+            manifests = [path for path in on_root.glob("*/manifest.json") if path.parent != unrelated]
             self.assertEqual(len(manifests), 1)
             self.assertFalse(stale.exists())
+            self.assertTrue(unrelated.exists())
             manifest = json.loads(manifests[0].read_text())
             self.assertGreaterEqual(manifest["started_monotonic_ns"], 0)
             self.assertRegex(manifest["run_start_utc"], r".+Z$")
