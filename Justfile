@@ -15,7 +15,7 @@ build:
 check:
     python3 scripts/verify_toolchain.py
     python3 scripts/guardrail_registry.py --check
-    python3 -m py_compile scripts/next_work.py scripts/verify_toolchain.py scripts/guardrail_registry.py scripts/local_ship.py tests/test_next_work.py tests/test_repository_contract.py tests/test_guardrail_registry.py tests/test_local_ship.py
+    python3 -m py_compile scripts/next_work.py scripts/verify_toolchain.py scripts/guardrail_registry.py scripts/local_ship.py scripts/trace.py tests/test_next_work.py tests/test_repository_contract.py tests/test_guardrail_registry.py tests/test_local_ship.py tests/test_trace.py
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -59,9 +59,17 @@ macos14-behavior:
     MMF_FFI_PROFILE=release swift run --package-path macos coherence-check
 
 trace-tail:
-    @echo "NOT READY: structured runtime trace capability belongs to the observability execution slice" >&2
-    @exit 2
+    python3 scripts/trace.py tail
 
 trace-export run_id="":
-    @echo "NOT READY: structured runtime trace export belongs to the observability execution slice" >&2
-    @exit 2
+    python3 scripts/trace.py export {{run_id}}
+
+benchmark-trace:
+    just benchmark
+    MMF_TRACE=1 just benchmark
+
+benchmark-trace-synthetic:
+    MMF_TRACE=1 just benchmark-synthetic
+
+benchmark-trace-ci:
+    MMF_TRACE=1 just benchmark-ci

@@ -4,17 +4,17 @@ import CoreGraphics
 import Foundation
 
 public enum ScrollAdapter {
-    public static func process(_ event: CGEvent, engine: PointerInputEngine) {
-        guard event.type == .scrollWheel,
-              event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0,
-              let decision = engine.evaluate(
-                horizontal: event.getIntegerValueField(.scrollWheelEventDeltaAxis2),
-                vertical: event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-              ),
-              case let .replace(horizontal, vertical) = decision
-        else { return }
+    // Numeric result avoids callback-side String construction.
+    @discardableResult public static func process(_ event: CGEvent, engine: PointerInputEngine) -> UInt8 {
+        guard event.type == .scrollWheel, event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else { return 0 }
+        guard let decision = engine.evaluate(
+            horizontal: event.getIntegerValueField(.scrollWheelEventDeltaAxis2),
+            vertical: event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        ) else { return 2 }
+        guard case let .replace(horizontal, vertical) = decision else { return 0 }
         event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: vertical)
         event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: horizontal)
+        return 1
     }
 }
 
@@ -22,6 +22,7 @@ final class TapState: @unchecked Sendable {
     // This lock serializes public lifecycle calls only. The callback never takes it.
     private let lock = NSLock()
     let engine: PointerInputEngine
+    let trace = TracePipeline()
     let ready = DispatchSemaphore(value: 0)
     let stopped = DispatchSemaphore(value: 0)
     private var lifecycle = Lifecycle.idle
@@ -53,11 +54,13 @@ final class TapState: @unchecked Sendable {
             callback: ScrollRuntime.callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
+            trace?.enqueue(granularity: 0, decision: 0, outcome: 0, reason: 0, now: DispatchTime.now().uptimeNanoseconds, kind: 1)
             ready.signal()
             complete()
             return
         }
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            trace?.enqueue(granularity: 0, decision: 0, outcome: 0, reason: 4, now: DispatchTime.now().uptimeNanoseconds, kind: 1)
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
             ready.signal()
@@ -119,8 +122,14 @@ final class TapState: @unchecked Sendable {
         lock.unlock()
     }
 
-    func disabledByTimeout() { timeoutCount += 1 }
-    func reenable() { if let tap { CGEvent.tapEnable(tap: tap, enable: true) } }
+    func disabledByTimeout() {
+        timeoutCount += 1
+        trace?.enqueue(granularity: 0, decision: 0, outcome: 0, reason: 1, now: DispatchTime.now().uptimeNanoseconds, kind: 1)
+    }
+    func reenable() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+        trace?.enqueue(granularity: 0, decision: 0, outcome: 0, reason: 2, now: DispatchTime.now().uptimeNanoseconds, kind: 1)
+    }
 
     func complete() {
         lock.lock()
@@ -130,6 +139,7 @@ final class TapState: @unchecked Sendable {
         }
         lifecycle = .finished
         runLoop = nil
+        trace?.close()
         lock.unlock()
         stopped.signal()
     }
@@ -214,7 +224,15 @@ public final class ScrollRuntime {
             if type == .tapDisabledByTimeout { state.disabledByTimeout() }
             state.reenable()
         } else {
-            ScrollAdapter.process(event, engine: state.engine)
+            let lineBased = event.type == .scrollWheel && event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0
+            let code = ScrollAdapter.process(event, engine: state.engine)
+            state.trace?.enqueue(
+                granularity: lineBased ? 1 : 0,
+                decision: code,
+                outcome: code == 1 ? 1 : 0,
+                reason: lineBased ? (code == 1 ? 2 : (code == 2 ? 3 : 1)) : 0,
+                now: DispatchTime.now().uptimeNanoseconds
+            )
         }
         return Unmanaged.passUnretained(event)
     }
