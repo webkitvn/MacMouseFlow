@@ -15,7 +15,7 @@ build:
 check:
     python3 scripts/verify_toolchain.py
     python3 scripts/guardrail_registry.py --check
-    python3 -m py_compile scripts/next_work.py scripts/verify_toolchain.py scripts/guardrail_registry.py scripts/local_ship.py scripts/trace.py tests/test_next_work.py tests/test_repository_contract.py tests/test_guardrail_registry.py tests/test_local_ship.py tests/test_trace.py
+    python3 -m py_compile scripts/next_work.py scripts/verify_toolchain.py scripts/guardrail_registry.py scripts/local_ship.py scripts/trace.py tests/test_next_work.py tests/test_repository_contract.py tests/test_guardrail_registry.py tests/test_local_ship.py tests/test_trace.py tests/test_runtime_trace_bundle.py
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
