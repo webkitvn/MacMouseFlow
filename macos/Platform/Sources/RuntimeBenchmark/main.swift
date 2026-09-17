@@ -4,7 +4,9 @@ import Dispatch
 import Foundation
 @_spi(Benchmark) import Platform
 
-let count = 100_000
+let defaultCount = 100_000
+let count = Int(ProcessInfo.processInfo.environment["MMF_BENCHMARK_EVENTS"] ?? "") ?? defaultCount
+let eventCount = count > 0 ? count : defaultCount
 let warmupCount = 1_000
 let ciMode = ProcessInfo.processInfo.environment["MMF_BENCHMARK_CI"] == "1"
 let syntheticMode = ProcessInfo.processInfo.environment["MMF_BENCHMARK_SYNTHETIC"] == "1"
@@ -39,12 +41,12 @@ let callback = CallbackHarness(engine: engine)
 guard callback.setReverse(false) else { exit(1) }
 let line = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: 3, wheel2: -2, wheel3: 0)!
 let pixel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 3, wheel2: -2, wheel3: 0)!
-let trace = (0..<count).map { index in index.isMultiple(of: 4) ? pixel.copy()! : line.copy()! }
+let trace = (0..<eventCount).map { index in index.isMultiple(of: 4) ? pixel.copy()! : line.copy()! }
 let warmup = (0..<warmupCount).map { _ in line.copy()! }
 
 for event in warmup { callback.invoke(.scrollWheel, event: event) }
-var abiSamples = [UInt64](repeating: 0, count: count)
-var callbackSamples = [UInt64](repeating: 0, count: count)
+var abiSamples = [UInt64](repeating: 0, count: eventCount)
+var callbackSamples = [UInt64](repeating: 0, count: eventCount)
 for index in trace.indices {
     if index.isMultiple(of: 100) {
         guard callback.setReverse((index / 100).isMultiple(of: 2)) else { exit(1) }
@@ -63,7 +65,7 @@ for index in trace.indices {
 
 func metrics(_ samples: inout [UInt64]) -> (UInt64, UInt64, UInt64) {
     samples.sort()
-    return (samples[Int(Double(count - 1) * 0.99)], samples[Int(Double(count - 1) * 0.999)], samples[count - 1])
+    return (samples[Int(Double(eventCount - 1) * 0.99)], samples[Int(Double(eventCount - 1) * 0.999)], samples[eventCount - 1])
 }
 let abi = metrics(&abiSamples)
 callback.close()

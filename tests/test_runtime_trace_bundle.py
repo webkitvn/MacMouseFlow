@@ -21,6 +21,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             "MMF_BENCHMARK_SYNTHETIC": "1",
             "MMF_TRACE_DIR": str(trace_dir),
             "MMF_TRACE": trace,
+            "MMF_BENCHMARK_EVENTS": "64",
         }
         return subprocess.run(
             ["swift", "run", "--package-path", "macos", "benchmark"],
