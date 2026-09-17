@@ -58,6 +58,7 @@ def main():
  if x.cmd=="tail":tail(b);return
  d=Path(x.destination) if x.destination else Path.home()/"Downloads"/"MacMouseFlow-Traces"/b.name
  if d.exists():fail("export destination already exists")
+ d.parent.mkdir(parents=True,exist_ok=True)
  tmp=Path(tempfile.mkdtemp(prefix=d.name+".tmp-",dir=d.parent))
  shutil.copy2(b/"manifest.json",tmp/"manifest.json")
  out=None;i=0;size=0

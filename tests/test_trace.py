@@ -19,6 +19,9 @@ class TraceTests(unittest.TestCase):
  def test_unique_temp_does_not_remove_sibling(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);(b/"trace-0.jsonl").write_text(json.dumps(self.record())+"\n");d=pathlib.Path(root)/"copy";sibling=pathlib.Path(root)/"copy.tmp-existing";sibling.mkdir();(sibling/"keep").write_text("yes");x=self.trace(root,"export","run-1",str(d));self.assertEqual(x.returncode,0,x.stderr);self.assertTrue((sibling/"keep").exists())
+ def test_exports_to_missing_nested_parent(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);(b/"trace-0.jsonl").write_text(json.dumps(self.record())+"\n");d=pathlib.Path(root)/"new"/"nested"/"copy";x=self.trace(root,"export","run-1",str(d));self.assertEqual(x.returncode,0,x.stderr);self.assertTrue((d/"manifest.json").exists())
  def test_rejects_existing_export_destination(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);(b/"trace-0.jsonl").write_text(json.dumps(self.record())+"\n");d=pathlib.Path(root)/"copy";d.mkdir();x=self.trace(root,"export","run-1",str(d));self.assertEqual(x.returncode,2);self.assertIn("already exists",x.stderr)
