@@ -40,7 +40,8 @@ final class TracePipeline: @unchecked Sendable {
     private let runID = UUID().uuidString
     private let started = DispatchTime.now().uptimeNanoseconds
     private let lock = NSLock()
-    private let ring = UnsafeMutablePointer<mmf_trace_ring>.allocate(capacity: 1)
+    // Allocated only after the explicit trace-off guard succeeds.
+    private var ring: UnsafeMutablePointer<mmf_trace_ring>?
     private var nextSequence: UInt64 = 0
     private var nextPublishSequence: UInt64 = 0
     // Single event-tap callback producer owns this receive counter; increment before tryLock.
@@ -65,7 +66,8 @@ final class TracePipeline: @unchecked Sendable {
         do {
             TraceStore.shared.lock.lock()
             defer { TraceStore.shared.lock.unlock() }
-            mmf_trace_ring_init(ring)
+            ring = UnsafeMutablePointer<mmf_trace_ring>.allocate(capacity: 1)
+            mmf_trace_ring_init(ring!)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             // Scan once; later runs preserve outstanding admitted reservations and subtract only deletions.
             if TraceStore.shared.initializedRoots.insert(root).inserted {
@@ -90,7 +92,7 @@ final class TracePipeline: @unchecked Sendable {
         Thread { [self] in drain() }.start()
     }
 
-    deinit { ring.deallocate() }
+    deinit { ring?.deallocate() }
 
     // One event-tap producer; atomic push never locks or blocks.
     func enqueue(horizontal: Int64, vertical: Int64, granularity: UInt8, decision: UInt8, outcome: UInt8, reason: UInt8, extractionNS: UInt64, rustNS: UInt64, applyNS: UInt64, totalNS: UInt64, tNS: UInt64, kind: UInt8 = 0) {
@@ -99,7 +101,7 @@ final class TracePipeline: @unchecked Sendable {
         let inputSequence = kind == 0 ? nextInputSequence : 0
         nextSequence &+= 1
         var record = mmf_trace_record(kind: kind, granularity: granularity, decision: decision, outcome: outcome, reason: reason, sequence: nextSequence, input_sequence: inputSequence, t_ns: tNS, extraction_ns: extractionNS, rust_ns: rustNS, apply_ns: applyNS, total_ns: totalNS, horizontal: horizontal, vertical: vertical)
-        if mmf_trace_ring_push(ring, &record) != 0 { available.signal() }
+        if mmf_trace_ring_push(ring!, &record) != 0 { available.signal() }
     }
 
     // Outside the callback: wait for the finite queue to drain so process exit cannot strand a bundle.
@@ -115,8 +117,8 @@ final class TracePipeline: @unchecked Sendable {
 
     private func take() -> (mmf_trace_record?, UInt64, Bool) {
         var record = mmf_trace_record()
-        let popped = mmf_trace_ring_pop(ring, &record) != 0
-        let losses = mmf_trace_ring_take_drops(ring)
+        let popped = mmf_trace_ring_pop(ring!, &record) != 0
+        let losses = mmf_trace_ring_take_drops(ring!)
         lock.lock(); totalDropped &+= losses; let shouldStop = stopping && !popped; lock.unlock()
         return (popped ? record : nil, losses, shouldStop)
     }

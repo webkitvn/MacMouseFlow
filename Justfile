@@ -67,7 +67,7 @@ trace-export run_id="":
     python3 scripts/trace.py export {{run_id}}
 
 benchmark-trace:
-    just benchmark
+    MMF_TRACE=0 just benchmark
     MMF_TRACE=1 just benchmark
 
 benchmark-trace-synthetic:

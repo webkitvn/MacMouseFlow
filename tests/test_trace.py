@@ -16,6 +16,9 @@ class TraceTests(unittest.TestCase):
  def test_accepts_lifecycle_record(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);r={"schema_version":1,"run_id":"run-1","seq":1,"t_ns":2,"level":"warning","component":"runtime","name":"run.stop"};(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");d=pathlib.Path(root)/"copy";x=self.trace(root,"export","run-1",str(d));self.assertEqual(x.returncode,0,x.stderr)
+ def test_unique_temp_does_not_remove_sibling(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);(b/"trace-0.jsonl").write_text(json.dumps(self.record())+"\n");d=pathlib.Path(root)/"copy";sibling=pathlib.Path(root)/"copy.tmp-existing";sibling.mkdir();(sibling/"keep").write_text("yes");x=self.trace(root,"export","run-1",str(d));self.assertEqual(x.returncode,0,x.stderr);self.assertTrue((sibling/"keep").exists())
  def test_rejects_existing_export_destination(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);(b/"trace-0.jsonl").write_text(json.dumps(self.record())+"\n");d=pathlib.Path(root)/"copy";d.mkdir();x=self.trace(root,"export","run-1",str(d));self.assertEqual(x.returncode,2);self.assertIn("already exists",x.stderr)

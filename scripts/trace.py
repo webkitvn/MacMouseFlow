@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate, follow, and export local MacMouseFlow diagnostic bundles."""
 from __future__ import annotations
-import argparse, json, os, shutil, sys, time
+import argparse, json, os, shutil, sys, tempfile, time
 from pathlib import Path
 ROOT = Path(os.environ.get("MMF_TRACE_DIR", Path.home() / "Library/Application Support/io.github.webkitvn.macmouseflow/Traces"))
 def fail(m): print(f"TRACE_ERROR: {m}", file=sys.stderr); raise SystemExit(2)
@@ -58,17 +58,21 @@ def main():
  if x.cmd=="tail":tail(b);return
  d=Path(x.destination) if x.destination else Path.home()/"Downloads"/"MacMouseFlow-Traces"/b.name
  if d.exists():fail("export destination already exists")
- tmp=d.with_name(d.name+".tmp")
- if tmp.exists():shutil.rmtree(tmp)
- tmp.mkdir(parents=True);shutil.copy2(b/"manifest.json",tmp/"manifest.json")
+ tmp=Path(tempfile.mkdtemp(prefix=d.name+".tmp-",dir=d.parent))
+ shutil.copy2(b/"manifest.json",tmp/"manifest.json")
  out=None;i=0;size=0
- for r in records(b):
-  line=json.dumps(r,sort_keys=True,separators=(",",":"))+"\n"
-  if out is None or size+len(line)>1048576:
-   if out:out.close()
-   out=(tmp/f"trace-{i}.jsonl").open("w");i+=1;size=0
-  out.write(line);size+=len(line)
- if out:out.close()
- tmp.replace(d)
+ try:
+  for r in records(b):
+   line=json.dumps(r,sort_keys=True,separators=(",",":"))+"\n"
+   if out is None or size+len(line)>1048576:
+    if out:out.close()
+    out=(tmp/f"trace-{i}.jsonl").open("w");i+=1;size=0
+   out.write(line);size+=len(line)
+  if out:out.close()
+  tmp.replace(d)
+ except BaseException:
+  if out:out.close()
+  shutil.rmtree(tmp,ignore_errors=True)
+  raise
  print(d)
 if __name__=="__main__":main()
