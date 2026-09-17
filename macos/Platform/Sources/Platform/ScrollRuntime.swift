@@ -3,6 +3,11 @@ import Bridge
 import CoreGraphics
 import Foundation
 
+public enum ScrollRuntimeStatus: Equatable {
+    case active
+    case unavailable
+}
+
 public enum ScrollAdapter {
     public static func evaluate(horizontal: Int64, vertical: Int64, engine: PointerInputEngine) -> InputDecision? {
         engine.evaluate(horizontal: horizontal, vertical: vertical)
@@ -109,6 +114,12 @@ final class TapState: @unchecked Sendable {
         return lifecycle == .running
     }
 
+    func runtimeStatus() -> ScrollRuntimeStatus {
+        lock.lock()
+        defer { lock.unlock() }
+        return lifecycle == .running ? .active : .unavailable
+    }
+
     func completedTimeoutCount() -> Int {
         lock.lock()
         defer { lock.unlock() }
@@ -132,8 +143,9 @@ final class TapState: @unchecked Sendable {
         trace?.callbackLifecycle(4)
     }
     func reenable() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-        trace?.callbackLifecycle(5)
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: true)
+        if CGEvent.tapIsEnabled(tap: tap) { trace?.callbackLifecycle(5) }
     }
 
     func complete() {
@@ -225,6 +237,8 @@ public final class ScrollRuntime {
         precondition(joined)
         return state.completedTimeoutCount()
     }
+
+    public var status: ScrollRuntimeStatus { state.runtimeStatus() }
 
     deinit { stop() }
 

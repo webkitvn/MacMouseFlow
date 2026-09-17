@@ -7,12 +7,14 @@ All tests operate under an isolated fake $HOME so no real ~/Applications or
 
 import fcntl
 import json
+import os
 import pathlib
 import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -22,14 +24,18 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import local_ship  # noqa: E402
 
 
-def make_bundle(root: pathlib.Path, name="fake.app", bundle_id=None, executable_name=None, exit_code=0):
+def make_bundle(root: pathlib.Path, name="fake.app", bundle_id=None, executable_name=None, exit_code=0, sleep_seconds=None, ignore_term=False):
     bundle_id = bundle_id or local_ship.BUNDLE_ID
+    if sleep_seconds is None:
+        sleep_seconds = 10 if exit_code == 0 else 0
     executable_name = executable_name or local_ship.EXECUTABLE_NAME
     bundle = root / name
     macos_dir = bundle / "Contents" / "MacOS"
     macos_dir.mkdir(parents=True)
     c_source = root / f"{name}-main.c"
-    c_source.write_text(f"int main(void) {{ return {exit_code}; }}\n")
+    c_source.write_text(
+        f"#include <signal.h>\n#include <unistd.h>\nint main(void) {{ {'signal(SIGTERM, SIG_IGN);' if ignore_term else ''} sleep({sleep_seconds}); return {exit_code}; }}\n"
+    )
     subprocess.run(
         ["cc", "-std=c11", str(c_source), "-o", str(macos_dir / executable_name)],
         check=True,
@@ -131,15 +137,44 @@ class BundleValidationTests(FakeHomeTestCase):
         self.assertIn("launch probe", result.reason)
 
     def test_launch_probe_reports_nonzero_exit(self):
-        bundle = make_bundle(self.tmp_home, exit_code=3)
+        bundle = make_bundle(self.tmp_home, exit_code=3, sleep_seconds=0)
         probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
         self.assertFalse(probe.ok)
         self.assertIn("3", probe.reason)
 
-    def test_launch_probe_accepts_exit_zero(self):
-        bundle = make_bundle(self.tmp_home, exit_code=0)
+    def test_launch_probe_accepts_resident_process_and_terminates_it(self):
+        bundle = make_bundle(self.tmp_home, sleep_seconds=10)
+        executable = bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        probe = local_ship.launch_probe(executable)
+        self.assertTrue(probe.ok, probe.reason)
+
+    def test_launch_probe_rejects_exit_zero_before_health_window(self):
+        bundle = make_bundle(self.tmp_home, exit_code=0, sleep_seconds=0)
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertFalse(probe.ok)
+        self.assertIn("exited during launch", probe.reason)
+
+    def test_launch_probe_bounds_cleanup_and_kills_uncooperative_child(self):
+        bundle = make_bundle(self.tmp_home, sleep_seconds=10, ignore_term=True)
+        started = time.monotonic()
         probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
         self.assertTrue(probe.ok, probe.reason)
+        self.assertLess(time.monotonic() - started, local_ship.LAUNCH_HEALTH_SECONDS + local_ship.LAUNCH_CLEANUP_SECONDS + 1)
+
+    def test_launch_probe_fails_when_killed_process_cannot_be_reaped(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.wait.side_effect = [subprocess.TimeoutExpired([], 0), subprocess.TimeoutExpired([], 0)]
+        process.stdout = mock.Mock()
+        process.stderr = mock.Mock()
+        with mock.patch.object(local_ship.subprocess, "Popen", return_value=process), mock.patch.object(local_ship.time, "monotonic", side_effect=[0, 2]):
+            probe = local_ship.launch_probe(pathlib.Path("fake"))
+        self.assertFalse(probe.ok)
+        self.assertIn("did not exit after kill", probe.reason)
+        process.kill.assert_called_once()
+
+    def test_rendered_info_plist_marks_menu_bar_utility(self):
+        self.assertTrue(plistlib.loads(local_ship._render_info_plist())["LSUIElement"])
 
     def test_validate_static_identity_does_not_execute_the_candidate(self):
         # A candidate that would fail its launch probe must still pass the static
