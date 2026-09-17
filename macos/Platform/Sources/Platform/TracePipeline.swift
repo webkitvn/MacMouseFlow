@@ -1,163 +1,184 @@
+import CPointerInput
 import Foundation
+import os
 
-private let traceCapacity = 256
+// Fixed 131072-record ceiling absorbs the benchmark burst; overflow is explicitly dropped.
+private let traceCapacity = 131_072
 private let traceStoreLimit = 64 * 1024 * 1024
 private let traceFileLimit = 1024 * 1024
-private let traceManifestReserve = 1024
+private let traceManifestReserve = 2048
 
-// Fixed numeric fields keep callback tracing allocation-free apart from the queue slot.
+// All producer fields are fixed-width scalars. JSON names/strings exist only in drain().
 private struct TraceRecord {
     let kind: UInt8
     let sequence: UInt64
-    let monotonicNanoseconds: UInt64
+    let inputSequence: UInt64
+    let tNS: UInt64
+    let horizontal: Int64
+    let vertical: Int64
     let granularity: UInt8
     let decision: UInt8
     let outcome: UInt8
     let reason: UInt8
+    let extractionNS: UInt64
+    let rustNS: UInt64
+    let applyNS: UInt64
+    let totalNS: UInt64
+}
+
+// M0 is a single process: this coordinator serializes all in-process trace stores; IPC is unnecessary.
+private final class TraceStore: @unchecked Sendable {
+    static let shared = TraceStore()
+    let lock = NSLock()
+    var active = Set<URL>()
+    var bytes = [URL: Int]()
+    var manifests = [URL: Int]()
+    var initializedRoots = Set<URL>()
 }
 
 final class TracePipeline: @unchecked Sendable {
     private let runID = UUID().uuidString
     private let started = DispatchTime.now().uptimeNanoseconds
     private let lock = NSLock()
-    private var queue = [TraceRecord?](repeating: nil, count: traceCapacity)
-    private var readIndex = 0
-    private var writeIndex = 0
-    private var count = 0
+    private let ring = UnsafeMutablePointer<mmf_trace_ring>.allocate(capacity: 1)
     private var nextSequence: UInt64 = 0
-    private var dropped: UInt64 = 0
+    // Single event-tap callback producer owns this receive counter; increment before tryLock.
+    private var nextInputSequence: UInt64 = 0
     private var totalDropped: UInt64 = 0
-    // The event-tap callback and close both execute on its single owner thread. A failed
-    // tryLock records locally, then the next successful lock folds it into shared drops.
-    private var pendingContention: UInt64 = 0
     private var stopping = false
-    private let available = DispatchSemaphore(value: 0)
-    private let drained = DispatchSemaphore(value: 0)
-    private let root: URL
-    private let destination: URL
-    private var activeBytes = 0
+    private var closed = false
+    private var writerFailed = false
+    private let available = DispatchSemaphore(value: 0), drained = DispatchSemaphore(value: 0)
+    private let root: URL, destination: URL
+    private let logger = Logger(subsystem: "io.github.webkitvn.macmouseflow", category: "diagnostics")
 
     init?() {
-        guard ProcessInfo.processInfo.environment["MMF_TRACE"] == "1" else { return nil }
-        root = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/io.github.webkitvn.macmouseflow/Traces")
+        // M0 is one process; there are no cross-process trace writers. Store accounting is process-local.
+        guard ProcessInfo.processInfo.environment["MMF_TRACE"] != "0" else { return nil }
+        let configured = ProcessInfo.processInfo.environment["MMF_TRACE_DIR"]
+        root = configured.map(URL.init(fileURLWithPath:)) ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/io.github.webkitvn.macmouseflow/Traces")
         destination = root.appendingPathComponent(runID, isDirectory: true)
         do {
+            TraceStore.shared.lock.lock()
+            defer { TraceStore.shared.lock.unlock() }
+            mmf_trace_ring_init(ring)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            activeBytes = pruneOldRuns()
+            // Scan once; later runs preserve outstanding admitted reservations and subtract only deletions.
+            if TraceStore.shared.initializedRoots.insert(root).inserted {
+                TraceStore.shared.bytes[root] = directorySize(root)
+            }
+            pruneOldRuns()
+            guard TraceStore.shared.bytes[root, default: 0] + traceManifestReserve <= traceStoreLimit else { throw NSError(domain: "trace", code: 1) }
             try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-            try writeManifest(clean: false, drops: 0)
-            activeBytes += directorySize(destination)
-            enqueue(granularity: 0, decision: 0, outcome: 0, reason: 3, now: DispatchTime.now().uptimeNanoseconds, kind: 1)
+            do {
+                try writeManifest(clean: false, drops: 0)
+                TraceStore.shared.bytes[root, default: 0] += traceManifestReserve
+                TraceStore.shared.manifests[destination] = traceManifestReserve
+                TraceStore.shared.active.insert(destination)
+                lifecycle(0)
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
         } catch { return nil }
         Thread { [self] in drain() }.start()
     }
 
-    // tryLock only: diagnostic failure never delays or changes input handling.
-    func enqueue(granularity: UInt8, decision: UInt8, outcome: UInt8, reason: UInt8, now: UInt64, kind: UInt8 = 0) {
-        guard lock.try() else { pendingContention &+= 1; return }
-        defer { lock.unlock() }
-        dropped &+= pendingContention
-        totalDropped &+= pendingContention
-        pendingContention = 0
-        guard !stopping, count < traceCapacity else { dropped &+= 1; totalDropped &+= 1; return }
+    deinit { ring.deallocate() }
+
+    // One event-tap producer; atomic push never locks or blocks.
+    func enqueue(horizontal: Int64, vertical: Int64, granularity: UInt8, decision: UInt8, outcome: UInt8, reason: UInt8, extractionNS: UInt64, rustNS: UInt64, applyNS: UInt64, totalNS: UInt64, tNS: UInt64, kind: UInt8 = 0) {
+        // Input sequence is assigned at native receive, before queue admission.
+        if kind == 0 { nextInputSequence &+= 1 }
+        let inputSequence = kind == 0 ? nextInputSequence : 0
         nextSequence &+= 1
-        queue[writeIndex] = TraceRecord(kind: kind, sequence: nextSequence, monotonicNanoseconds: now, granularity: granularity, decision: decision, outcome: outcome, reason: reason)
-        writeIndex = (writeIndex + 1) % traceCapacity
-        count += 1
-        available.signal()
+        var record = mmf_trace_record(kind: kind, granularity: granularity, decision: decision, outcome: outcome, reason: reason, sequence: nextSequence, input_sequence: inputSequence, t_ns: tNS, extraction_ns: extractionNS, rust_ns: rustNS, apply_ns: applyNS, total_ns: totalNS, horizontal: horizontal, vertical: vertical)
+        if mmf_trace_ring_push(ring, &record) != 0 { available.signal() }
     }
 
+    // Outside the callback: wait for the finite queue to drain so process exit cannot strand a bundle.
     func close() {
         lock.lock()
-        dropped &+= pendingContention
-        totalDropped &+= pendingContention
-        pendingContention = 0
+        guard !closed else { lock.unlock(); return }
+        closed = true
         stopping = true
         lock.unlock()
         available.signal()
-        _ = drained.wait(timeout: .now() + 2)
+        _ = drained.wait(timeout: .distantFuture)
     }
 
-    private func take() -> (TraceRecord?, UInt64, Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        let shouldStop = stopping && count == 0
-        guard count > 0 else { return (nil, 0, shouldStop) }
-        let record = queue[readIndex]
-        queue[readIndex] = nil
-        readIndex = (readIndex + 1) % traceCapacity
-        count -= 1
-        let losses = dropped
-        dropped = 0
-        return (record, losses, false)
+    private func take() -> (mmf_trace_record?, UInt64, Bool) {
+        var record = mmf_trace_record()
+        let popped = mmf_trace_ring_pop(ring, &record) != 0
+        let losses = mmf_trace_ring_take_drops(ring)
+        lock.lock(); totalDropped &+= losses; let shouldStop = stopping && !popped; lock.unlock()
+        return (popped ? record : nil, losses, shouldStop)
     }
 
     private func drain() {
-        var index = 0, segmentBytes = 0
-        var handle: FileHandle?
-        var sinkFailed = false
+        var index = 0, segmentBytes = 0; var handle: FileHandle?; var sinkFailed = false
         while true {
             _ = available.wait(timeout: .now() + 1)
             while true {
                 let (record, losses, shouldStop) = take()
                 if shouldStop {
-                    lock.lock()
-                    let finalDrops = totalDropped
-                    let pendingDrops = dropped
-                    lock.unlock()
-                    if pendingDrops > 0 { writeDrop(pendingDrops, handle: &handle, index: &index, bytes: &segmentBytes, sinkFailed: &sinkFailed) }
-                    if sinkFailed == false { write(["schema_version": 1, "run_id": runID, "sequence": UInt64.max, "kind": "lifecycle", "monotonic_ns": DispatchTime.now().uptimeNanoseconds, "reason_code": "stopped"], handle: &handle, index: &index, bytes: &segmentBytes, sinkFailed: &sinkFailed) }
+                    if losses > 0 { writeDrop(losses, &handle, &index, &segmentBytes, &sinkFailed) }
                     try? handle?.close()
+                    lock.lock(); let finalDrops = totalDropped; lock.unlock()
                     try? writeManifest(clean: !sinkFailed, drops: finalDrops)
-                    drained.signal()
-                    return
+                    TraceStore.shared.lock.lock(); TraceStore.shared.active.remove(destination); TraceStore.shared.lock.unlock()
+                    drained.signal(); return
                 }
                 guard let record else { break }
-                if losses > 0 { writeDrop(losses, handle: &handle, index: &index, bytes: &segmentBytes, sinkFailed: &sinkFailed) }
-                let object: [String: Any] = record.kind == 0
-                    ? ["schema_version": 1, "run_id": runID, "sequence": record.sequence, "kind": "input", "monotonic_ns": record.monotonicNanoseconds, "granularity": record.granularity == 1 ? "line_based" : "pixel_based", "decision": decisionName(record.decision), "native_outcome": outcomeName(record.outcome), "reason_code": reasonName(record.reason)]
-                    : ["schema_version": 1, "run_id": runID, "sequence": record.sequence, "kind": "lifecycle", "monotonic_ns": record.monotonicNanoseconds, "reason_code": lifecycleReasonName(record.reason)]
-                write(object, handle: &handle, index: &index, bytes: &segmentBytes, sinkFailed: &sinkFailed)
+                if losses > 0 { writeDrop(losses, &handle, &index, &segmentBytes, &sinkFailed) }
+                if record.kind == 0 {
+                    write(["schema_version": 1, "run_id": runID, "seq": record.sequence, "t_ns": record.t_ns, "level": "debug", "component": "input", "name": "input.pipeline", "input_seq": record.input_sequence, "horizontal_lines": record.horizontal, "vertical_lines": record.vertical, "granularity": record.granularity == 1 ? "line_based" : "pixel_based", "decision": decisionName(record.decision), "native_outcome": outcomeName(record.outcome), "reason_code": reasonName(record.reason), "config_revision": NSNull(), "extraction_ns": record.extraction_ns, "rust_eval_ns": record.rust_ns, "native_apply_ns": record.apply_ns, "total_ns": record.total_ns], &handle, &index, &segmentBytes, &sinkFailed)
+                } else { writeLifecycle(record, &handle, &index, &segmentBytes, &sinkFailed) }
             }
         }
     }
 
-    private func writeDrop(_ losses: UInt64, handle: inout FileHandle?, index: inout Int, bytes: inout Int, sinkFailed: inout Bool) {
-        write(["schema_version": 1, "run_id": runID, "kind": "trace.dropped", "drop_count": losses], handle: &handle, index: &index, bytes: &bytes, sinkFailed: &sinkFailed)
+    private func writeLifecycle(_ record: mmf_trace_record, _ handle: inout FileHandle?, _ index: inout Int, _ bytes: inout Int, _ failed: inout Bool) {
+        let name = lifecycleName(record.reason)
+        write(["schema_version": 1, "run_id": runID, "seq": record.sequence, "t_ns": record.t_ns, "level": "warning", "component": "runtime", "name": name], &handle, &index, &bytes, &failed)
+        logger.notice("trace \(name, privacy: .public)")
     }
-    private func write(_ object: [String: Any], handle: inout FileHandle?, index: inout Int, bytes: inout Int, sinkFailed: inout Bool) {
-        guard !sinkFailed, let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), data.count + 1 <= traceFileLimit else { sinkFailed = true; return }
-        guard activeBytes + data.count + 1 + traceManifestReserve <= traceStoreLimit else { sinkFailed = true; return }
+    func lifecycle(_ reason: UInt8) { enqueue(horizontal: 0, vertical: 0, granularity: 0, decision: 0, outcome: 0, reason: reason, extractionNS: 0, rustNS: 0, applyNS: 0, totalNS: 0, tNS: DispatchTime.now().uptimeNanoseconds, kind: 1) }
+    private func writeDrop(_ losses: UInt64, _ handle: inout FileHandle?, _ index: inout Int, _ bytes: inout Int, _ failed: inout Bool) {
+        write(["schema_version": 1, "run_id": runID, "level": "warning", "component": "trace", "name": "trace.dropped", "drop_count": losses], &handle, &index, &bytes, &failed)
+    }
+    private func write(_ object: [String: Any], _ handle: inout FileHandle?, _ index: inout Int, _ bytes: inout Int, _ failed: inout Bool) {
+        guard !failed, let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else { failed = true; addLoss(); return }
+        TraceStore.shared.lock.lock()
+        let admitted = TraceStore.shared.bytes[root, default: 0] + data.count + 1 + traceManifestReserve <= traceStoreLimit
+        if admitted { TraceStore.shared.bytes[root, default: 0] += data.count + 1 }
+        TraceStore.shared.lock.unlock()
+        guard admitted else { failed = true; addLoss(); return }
         if handle == nil || bytes + data.count + 1 > traceFileLimit {
-            try? handle?.close()
-            let path = destination.appendingPathComponent("trace-\(index).jsonl")
-            FileManager.default.createFile(atPath: path.path, contents: nil)
-            handle = FileHandle(forWritingAtPath: path.path)
-            index += 1; bytes = 0
+            try? handle?.close(); let path = destination.appendingPathComponent("trace-\(index).jsonl")
+            FileManager.default.createFile(atPath: path.path, contents: nil); handle = FileHandle(forWritingAtPath: path.path); index += 1; bytes = 0
         }
-        guard let handle else { sinkFailed = true; return }
-        do { try handle.write(contentsOf: data); try handle.write(contentsOf: Data([10])); bytes += data.count + 1; activeBytes += data.count + 1 } catch { sinkFailed = true }
+        guard let handle else { failed = true; addLoss(); return }
+        do { try handle.write(contentsOf: data); try handle.write(contentsOf: Data([10])); bytes += data.count + 1 } catch { failed = true; addLoss() }
     }
-
+    private func addLoss() {
+        lock.lock(); totalDropped &+= 1; writerFailed = true; lock.unlock()
+        logger.error("trace writer_failed")
+    }
     private func writeManifest(clean: Bool, drops: UInt64) throws {
-        let data = try JSONSerialization.data(withJSONObject: ["schema_version": 1, "run_id": runID, "started_monotonic_ns": started, "clean_shutdown": clean, "drop_count": drops], options: [.sortedKeys])
+        let data = try JSONSerialization.data(withJSONObject: ["schema_version": 1, "run_id": runID, "started_monotonic_ns": started, "clean_shutdown": clean, "drop_count": drops, "writer_failed": writerFailed], options: [.sortedKeys])
         try data.write(to: destination.appendingPathComponent("manifest.json"), options: .atomic)
     }
-    @discardableResult private func pruneOldRuns() -> Int {
+    private func pruneOldRuns() {
         let runs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])) ?? []
-        var size = runs.reduce(0) { $0 + directorySize($1) }
-        // Reserve manifest space before creating the current run.
-        for run in runs.sorted(by: { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) < ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }) where size + traceManifestReserve > traceStoreLimit {
-            let old = directorySize(run); try? FileManager.default.removeItem(at: run); size -= old
+        for run in runs.filter({ !TraceStore.shared.active.contains($0) }).sorted(by: { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) < ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }) where TraceStore.shared.bytes[root, default: 0] + traceManifestReserve > traceStoreLimit {
+            let old = directorySize(run)
+            if (try? FileManager.default.removeItem(at: run)) != nil { TraceStore.shared.bytes[root] = max(0, TraceStore.shared.bytes[root, default: 0] - old) }
         }
-        return size
     }
-    private func directorySize(_ url: URL) -> Int {
-        guard let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
-        return enumerator.reduce(0) { total, item in total + ((try? (item as? URL)?.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
-    }
+    private func directorySize(_ url: URL) -> Int { guard let entries = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }; return entries.reduce(0) { $0 + ((try? ( $1 as? URL)?.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) } }
 }
 private func decisionName(_ value: UInt8) -> String { ["preserve", "replace", "engine_unavailable"][Int(value)] }
 private func outcomeName(_ value: UInt8) -> String { ["preserved", "applied"][Int(value)] }
+private func lifecycleName(_ value: UInt8) -> String { ["run.start", "run.stop", "tap.failure", "source.failure", "tap.timeout", "tap.reenabled", "writer_failed"][Int(value)] }
 private func reasonName(_ value: UInt8) -> String { ["not_line_based", "preserve", "replace", "engine_unavailable"][Int(value)] }
-private func lifecycleReasonName(_ value: UInt8) -> String { ["tap_unavailable", "disabled_by_timeout", "reenabled", "started", "source_unavailable"][Int(value)] }

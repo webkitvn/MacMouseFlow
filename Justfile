@@ -25,6 +25,8 @@ test:
     cargo build -p pointer-input-ffi --locked
     cc -std=c11 -Wall -Wextra -Werror -Irust/ffi/include rust/ffi/tests/abi_contract.c -Ltarget/debug -lpointer_input_ffi -Wl,-rpath,"$PWD/target/debug" -o target/abi_contract
     target/abi_contract
+    cc -std=c11 -Wall -Wextra -Werror -Imacos/Bridge/CPointerInput macos/Bridge/CPointerInput/test_trace_ring.c -o target/trace_ring_contract
+    target/trace_ring_contract
     MMF_FFI_PROFILE=debug swift test --package-path macos
 
 ci: check test build

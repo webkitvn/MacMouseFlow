@@ -3,66 +3,62 @@
 from __future__ import annotations
 import argparse, json, os, shutil, sys, time
 from pathlib import Path
-
 ROOT = Path(os.environ.get("MMF_TRACE_DIR", Path.home() / "Library/Application Support/io.github.webkitvn.macmouseflow/Traces"))
-
-def fail(message): print(f"TRACE_ERROR: {message}", file=sys.stderr); raise SystemExit(2)
-def bundles(): return sorted((p for p in ROOT.glob("*") if (p / "manifest.json").is_file()), key=lambda p: p.stat().st_mtime)
-def selected(run_id):
-    found = [p for p in bundles() if run_id is None or p.name == run_id]
-    if not found: fail("trace run not found")
-    return found[-1]
-def segments(bundle):
-    try: return sorted(bundle.glob("trace-*.jsonl"), key=lambda p: int(p.stem.removeprefix("trace-")))
-    except ValueError: fail("invalid segment name")
-def exact(value, kind): return type(value) is kind
-def validate_manifest(value, run):
-    if not isinstance(value, dict) or set(value) != {"schema_version", "run_id", "started_monotonic_ns", "clean_shutdown", "drop_count"} or not (exact(value["schema_version"], int) and value["schema_version"] == 1 and exact(value["run_id"], str) and value["run_id"] == run and exact(value["started_monotonic_ns"], int) and value["started_monotonic_ns"] >= 0 and exact(value["clean_shutdown"], bool) and exact(value["drop_count"], int) and value["drop_count"] >= 0): fail("manifest violates trace schema/privacy allowlist")
-def manifest(bundle):
-    try: value = json.loads((bundle / "manifest.json").read_text())
-    except (OSError, json.JSONDecodeError) as exc: fail(f"invalid manifest: {exc}")
-    validate_manifest(value, bundle.name); return value
-def validate(value, run):
-    if not isinstance(value, dict) or value.get("schema_version") != 1 or not exact(value.get("schema_version"), int) or value.get("run_id") != run or not exact(value.get("run_id"), str): fail("record violates trace schema/privacy allowlist")
-    if value.get("kind") == "trace.dropped":
-        if set(value) != {"schema_version", "run_id", "kind", "drop_count"} or not exact(value.get("drop_count"), int) or value["drop_count"] < 1: fail("record violates trace schema/privacy allowlist")
-    elif value.get("kind") == "lifecycle":
-        keys = {"schema_version", "run_id", "sequence", "kind", "monotonic_ns", "reason_code"}
-        if set(value) != keys or not (exact(value.get("sequence"), int) and value["sequence"] > 0 and exact(value.get("monotonic_ns"), int) and value["monotonic_ns"] >= 0 and value.get("reason_code") in {"tap_unavailable", "disabled_by_timeout", "reenabled", "started", "stopped", "source_unavailable", "writer_failed"}): fail("record violates trace schema/privacy allowlist")
-    elif value.get("kind") == "input":
-        keys = {"schema_version", "run_id", "sequence", "kind", "monotonic_ns", "granularity", "decision", "native_outcome", "reason_code"}
-        if set(value) != keys or not (exact(value.get("sequence"), int) and value["sequence"] > 0 and exact(value.get("monotonic_ns"), int) and value["monotonic_ns"] >= 0 and value.get("granularity") in {"line_based", "pixel_based"} and value.get("decision") in {"preserve", "replace", "engine_unavailable"} and value.get("native_outcome") in {"preserved", "applied"} and value.get("reason_code") in {"not_line_based", "preserve", "replace", "engine_unavailable"}): fail("record violates trace schema/privacy allowlist")
-    else: fail("record violates trace schema/privacy allowlist")
-    return value
-def complete_records(bundle):
-    manifest(bundle)
-    for path in segments(bundle):
-        for line in path.open():
-            if not line.endswith("\n"): break
-            try: yield validate(json.loads(line), bundle.name)
-            except json.JSONDecodeError as exc: fail(str(exc))
-def tail(bundle):
-    positions = {}
+def fail(m): print(f"TRACE_ERROR: {m}", file=sys.stderr); raise SystemExit(2)
+def exact(v,t): return type(v) is t
+def bundles(): return sorted((p for p in ROOT.glob("*") if (p / "manifest.json").is_file()), key=lambda p:p.stat().st_mtime)
+def selected(r):
+ p=[x for x in bundles() if r is None or x.name==r]
+ if not p: fail("trace run not found")
+ return p[-1]
+def segments(b):
+ try:return sorted(b.glob("trace-*.jsonl"),key=lambda p:int(p.stem[6:]))
+ except ValueError:fail("invalid segment name")
+def manifest(b):
+ try:v=json.loads((b/"manifest.json").read_text())
+ except (OSError,json.JSONDecodeError) as e:fail(f"invalid manifest: {e}")
+ if not isinstance(v,dict) or set(v)!={"schema_version","run_id","started_monotonic_ns","clean_shutdown","drop_count","writer_failed"} or not(exact(v["schema_version"],int) and v["schema_version"]==1 and exact(v["run_id"],str) and v["run_id"]==b.name and exact(v["started_monotonic_ns"],int) and v["started_monotonic_ns"]>=0 and exact(v["clean_shutdown"],bool) and exact(v["writer_failed"],bool) and exact(v["drop_count"],int) and v["drop_count"]>=0):fail("manifest violates trace schema/privacy allowlist")
+def validate(v,run):
+ if not isinstance(v,dict) or v.get("schema_version")!=1 or not exact(v.get("schema_version"),int) or v.get("run_id")!=run or not exact(v.get("run_id"),str):fail("record violates trace schema/privacy allowlist")
+ if v.get("name") in {"run.start","run.stop","tap.failure","source.failure","tap.timeout","tap.reenabled","writer_failed"}:
+  if set(v)!={"schema_version","run_id","seq","t_ns","level","component","name"} or not(exact(v.get("seq"),int) and v["seq"]>0 and exact(v.get("t_ns"),int) and v["t_ns"]>=0 and v["level"]=="warning" and v["component"]=="runtime"):fail("record violates trace schema/privacy allowlist")
+ elif v.get("name")=="trace.dropped":
+  if set(v)!={"schema_version","run_id","level","component","name","drop_count"} or v["level"]!="warning" or v["component"]!="trace" or not exact(v.get("drop_count"),int) or v["drop_count"]<1:fail("record violates trace schema/privacy allowlist")
+ elif v.get("name")=="input.pipeline":
+  keys={"schema_version","run_id","seq","t_ns","level","component","name","input_seq","horizontal_lines","vertical_lines","granularity","decision","native_outcome","reason_code","config_revision","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"}
+  if set(v)!=keys or not(all(exact(v[k],int) and v[k]>=0 for k in {"seq","t_ns","input_seq","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"}) and exact(v["horizontal_lines"],int) and exact(v["vertical_lines"],int) and v["level"]=="debug" and v["component"]=="input" and v["granularity"] in {"line_based","pixel_based"} and v["decision"] in {"preserve","replace","engine_unavailable"} and v["native_outcome"] in {"preserved","applied"} and v["reason_code"] in {"not_line_based","preserve","replace","engine_unavailable"} and v["config_revision"] is None):fail("record violates trace schema/privacy allowlist")
+ else:fail("record violates trace schema/privacy allowlist")
+ return v
+def records(b):
+ manifest(b)
+ for p in segments(b):
+  with p.open() as f:
+   while line:=f.readline():
+    if not line.endswith("\n"):break
+    try:yield validate(json.loads(line),b.name)
+    except json.JSONDecodeError:fail("invalid completed JSONL record")
+def tail(b):
+ offsets={}
+ while True:
+  manifest(b)
+  for p in segments(b):
+   with p.open() as f:
+    f.seek(offsets.get(p,0))
     while True:
-        manifest(bundle)
-        for path in segments(bundle):
-            with path.open() as stream:
-                stream.seek(positions.get(path, 0))
-                for line in stream:
-                    if not line.endswith("\n"): break
-                    validate(json.loads(line), bundle.name); print(line, end="", flush=True)
-                positions[path] = stream.tell()
-        time.sleep(.2)
+     offset=f.tell(); line=f.readline()
+     if not line:break
+     if not line.endswith("\n"): f.seek(offset); break
+     try:validate(json.loads(line),b.name)
+     except json.JSONDecodeError:fail("invalid completed JSONL record")
+     print(line,end="",flush=True)
+    offsets[p]=f.tell()
+  time.sleep(.2)
 def main():
-    parser = argparse.ArgumentParser(); commands = parser.add_subparsers(dest="command", required=True)
-    tail_p = commands.add_parser("tail"); tail_p.add_argument("run_id", nargs="?")
-    export = commands.add_parser("export"); export.add_argument("run_id", nargs="?"); export.add_argument("destination", nargs="?")
-    args = parser.parse_args(); bundle = selected(getattr(args, "run_id", None))
-    if args.command == "tail": tail(bundle); return
-    records = list(complete_records(bundle)); destination = Path(args.destination) if args.destination else Path.home() / "Downloads" / "MacMouseFlow-Traces" / bundle.name
-    if destination.exists(): shutil.rmtree(destination)
-    destination.mkdir(parents=True); shutil.copy2(bundle / "manifest.json", destination / "manifest.json")
-    for index, record in enumerate(records):
-        with (destination / f"trace-{index}.jsonl").open("w") as out: out.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
-    print(destination)
-if __name__ == "__main__": main()
+ a=argparse.ArgumentParser(); s=a.add_subparsers(dest="cmd",required=True); t=s.add_parser("tail");t.add_argument("run_id",nargs="?");e=s.add_parser("export");e.add_argument("run_id",nargs="?");e.add_argument("destination",nargs="?");x=a.parse_args();b=selected(getattr(x,"run_id",None))
+ if x.cmd=="tail":tail(b);return
+ rs=list(records(b));d=Path(x.destination) if x.destination else Path.home()/"Downloads"/"MacMouseFlow-Traces"/b.name
+ if d.exists():fail("export destination already exists")
+ d.mkdir(parents=True);shutil.copy2(b/"manifest.json",d/"manifest.json")
+ for i,r in enumerate(rs):(d/f"trace-{i}.jsonl").write_text(json.dumps(r,sort_keys=True,separators=(",",":"))+"\n")
+ print(d)
+if __name__=="__main__":main()

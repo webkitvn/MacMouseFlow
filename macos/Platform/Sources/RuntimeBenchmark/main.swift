@@ -66,6 +66,8 @@ func metrics(_ samples: inout [UInt64]) -> (UInt64, UInt64, UInt64) {
     return (samples[Int(Double(count - 1) * 0.99)], samples[Int(Double(count - 1) * 0.999)], samples[count - 1])
 }
 let abi = metrics(&abiSamples)
+callback.close()
+if ProcessInfo.processInfo.environment["MMF_TRACE"] == "1" { print("Trace enabled; inspect the run manifest drop_count after benchmark.") }
 let callbackMetrics = metrics(&callbackSamples)
 print("ABI+Rust p99=\(abi.0)ns")
 if ciMode {
