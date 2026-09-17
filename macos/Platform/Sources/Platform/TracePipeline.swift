@@ -233,11 +233,12 @@ final class TracePipeline: @unchecked Sendable {
     }
     private func ownsTraceBundle(_ run: URL) -> Bool {
         let path = run.appendingPathComponent("manifest.json")
-        guard (try? path.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true, let data = try? Data(contentsOf: path), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any], integer(manifest["schema_version"]) == 1, manifest["run_id"] as? String == run.lastPathComponent, (integer(manifest["started_monotonic_ns"]) ?? -1) >= 0, boolean(manifest["clean_shutdown"]), (integer(manifest["drop_count"]) ?? -1) >= 0, boolean(manifest["writer_failed"]) else { return false }
-        let historic = Set(["schema_version", "run_id", "started_monotonic_ns", "clean_shutdown", "drop_count", "writer_failed"])
+        guard (try? path.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true, let data = try? Data(contentsOf: path), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any], integer(manifest["schema_version"]) == 1, manifest["run_id"] as? String == run.lastPathComponent, (integer(manifest["started_monotonic_ns"]) ?? -1) >= 0, boolean(manifest["clean_shutdown"]), (integer(manifest["drop_count"]) ?? -1) >= 0 else { return false }
+        let legacy = Set(["schema_version", "run_id", "started_monotonic_ns", "clean_shutdown", "drop_count"])
+        let historic = legacy.union(["writer_failed"])
         let current = historic.union(["run_start_utc"])
-        guard Set(manifest.keys) == historic || Set(manifest.keys) == current else { return false }
-        return Set(manifest.keys) == historic || (manifest["run_start_utc"] as? String).flatMap { $0.hasSuffix("Z") ? ISO8601DateFormatter().date(from: $0) : nil } != nil
+        guard Set(manifest.keys) == legacy || Set(manifest.keys) == historic && boolean(manifest["writer_failed"]) || Set(manifest.keys) == current && boolean(manifest["writer_failed"]) else { return false }
+        return Set(manifest.keys) != current || (manifest["run_start_utc"] as? String).flatMap { $0.hasSuffix("Z") ? ISO8601DateFormatter().date(from: $0) : nil } != nil
     }
     private func boolean(_ value: Any?) -> Bool { guard let value = value as? NSNumber else { return false }; return CFGetTypeID(value) == CFBooleanGetTypeID() }
     private func integer(_ value: Any?) -> Int64? {

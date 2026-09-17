@@ -34,8 +34,9 @@ def validate(v,run,current):
   if not((current and set(v)==current_keys and exact(v.get("seq"),int) and v["seq"]>0 and exact(v.get("t_ns"),int) and v["t_ns"]>=0 and v["level"]=="warn" and v["component"]=="observability") or (not current and set(v)==historic_keys and v["level"]=="warning" and v["component"]=="trace")) or not exact(v.get("drop_count"),int) or v["drop_count"]<1:fail("record violates trace schema/privacy allowlist")
  elif v.get("name")=="input.pipeline":
   keys={"schema_version","run_id","seq","t_ns","level","component","name","input_seq","horizontal_lines","vertical_lines","granularity","decision","native_outcome","reason_code","config_revision","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"};vocabulary=("trace","native.input") if current else ("debug","input")
-  valid={("preserve","preserved","not_line_based"),("preserve","preserved","preserve"),("preserve","preserved","engine_unavailable"),("replace","applied","replace")}
-  if set(v)!=keys or not(all(exact(v[k],int) and v[k]>=0 for k in {"seq","t_ns","input_seq","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"}) and exact(v["horizontal_lines"],int) and exact(v["vertical_lines"],int) and (v["level"],v["component"]) == vocabulary and v["granularity"] in {"line_based","pixel_based"} and (v["decision"],v["native_outcome"],v["reason_code"]) in valid and v["config_revision"] is None):fail("record violates trace schema/privacy allowlist")
+  current_valid={("pixel_based","preserve","preserved","not_line_based"),("line_based","preserve","preserved","preserve"),("line_based","preserve","preserved","engine_unavailable"),("line_based","replace","applied","replace")}
+  historic_valid=current_valid|{("line_based","engine_unavailable","preserved","engine_unavailable")}
+  if set(v)!=keys or not(all(exact(v[k],int) and v[k]>=0 for k in {"seq","t_ns","input_seq","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"}) and exact(v["horizontal_lines"],int) and exact(v["vertical_lines"],int) and (v["level"],v["component"]) == vocabulary and (v["granularity"],v["decision"],v["native_outcome"],v["reason_code"]) in (current_valid if current else historic_valid) and v["config_revision"] is None):fail("record violates trace schema/privacy allowlist")
  else:fail("record violates trace schema/privacy allowlist")
  return v
 def ordered(v,last):

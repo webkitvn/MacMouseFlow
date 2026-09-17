@@ -31,12 +31,17 @@ class TraceTests(unittest.TestCase):
    r=self.record();r["reason_code"]="engine_unavailable";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"failure"));self.assertEqual(x.returncode,2)
    r=self.record();r["decision"]="preserve";r["native_outcome"]="applied";r["reason_code"]="preserve";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"outcome"));self.assertEqual(x.returncode,2)
    r=self.record();r["decision"]="preserve";r["native_outcome"]="preserved";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"reason"));self.assertEqual(x.returncode,2)
+   r=self.record();r["granularity"]="pixel_based";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"pixel"));self.assertEqual(x.returncode,2)
+   r=self.record();r["decision"]="preserve";r["native_outcome"]="preserved";r["reason_code"]="not_line_based";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"line"));self.assertEqual(x.returncode,2)
  def test_rejects_malformed_run_start_utc(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);m=json.loads((b/"manifest.json").read_text());m["run_start_utc"]="Z";(b/"manifest.json").write_text(json.dumps(m));x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"invalid"));self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)
  def test_exports_historic_v1_bundle(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);m=json.loads((b/"manifest.json").read_text());del m["run_start_utc"];(b/"manifest.json").write_text(json.dumps(m));r=self.record();r["level"]="debug";r["component"]="input";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n"+json.dumps({"schema_version":1,"run_id":"run-1","level":"warning","component":"trace","name":"trace.dropped","drop_count":1})+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"historic"));self.assertEqual(x.returncode,0,x.stderr)
+ def test_exports_historic_engine_failure(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);m=json.loads((b/"manifest.json").read_text());del m["run_start_utc"];(b/"manifest.json").write_text(json.dumps(m));r=self.record();r["level"]="debug";r["component"]="input";r["decision"]="engine_unavailable";r["native_outcome"]="preserved";r["reason_code"]="engine_unavailable";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"historic"));self.assertEqual(x.returncode,0,x.stderr)
  def test_rejects_historic_record_with_current_manifest(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);(b/"trace-0.jsonl").write_text(json.dumps({"schema_version":1,"run_id":"run-1","level":"warning","component":"trace","name":"trace.dropped","drop_count":1})+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"mixed"));self.assertEqual(x.returncode,2)

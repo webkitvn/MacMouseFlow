@@ -42,7 +42,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             on_root = root / "on"
             stale = on_root / "stale"
             stale.mkdir(parents=True)
-            (stale / "manifest.json").write_text(json.dumps({"schema_version": 1, "run_id": "stale", "started_monotonic_ns": 0, "clean_shutdown": True, "drop_count": 0, "writer_failed": False}))
+            (stale / "manifest.json").write_text(json.dumps({"schema_version": 1, "run_id": "stale", "started_monotonic_ns": 0, "clean_shutdown": True, "drop_count": 0}))
             with (stale / "trace-0.jsonl").open("wb") as trace:
                 trace.truncate(64 * 1024 * 1024 - 3_000)
             unrelated = on_root / "keep"
