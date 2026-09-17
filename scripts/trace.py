@@ -56,9 +56,19 @@ def tail(b):
 def main():
  a=argparse.ArgumentParser(); s=a.add_subparsers(dest="cmd",required=True); t=s.add_parser("tail");t.add_argument("run_id",nargs="?");e=s.add_parser("export");e.add_argument("run_id",nargs="?");e.add_argument("destination",nargs="?");x=a.parse_args();b=selected(getattr(x,"run_id",None))
  if x.cmd=="tail":tail(b);return
- rs=list(records(b));d=Path(x.destination) if x.destination else Path.home()/"Downloads"/"MacMouseFlow-Traces"/b.name
+ d=Path(x.destination) if x.destination else Path.home()/"Downloads"/"MacMouseFlow-Traces"/b.name
  if d.exists():fail("export destination already exists")
- d.mkdir(parents=True);shutil.copy2(b/"manifest.json",d/"manifest.json")
- for i,r in enumerate(rs):(d/f"trace-{i}.jsonl").write_text(json.dumps(r,sort_keys=True,separators=(",",":"))+"\n")
+ tmp=d.with_name(d.name+".tmp")
+ if tmp.exists():shutil.rmtree(tmp)
+ tmp.mkdir(parents=True);shutil.copy2(b/"manifest.json",tmp/"manifest.json")
+ out=None;i=0;size=0
+ for r in records(b):
+  line=json.dumps(r,sort_keys=True,separators=(",",":"))+"\n"
+  if out is None or size+len(line)>1048576:
+   if out:out.close()
+   out=(tmp/f"trace-{i}.jsonl").open("w");i+=1;size=0
+  out.write(line);size+=len(line)
+ if out:out.close()
+ tmp.replace(d)
  print(d)
 if __name__=="__main__":main()

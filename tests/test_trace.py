@@ -12,7 +12,7 @@ class TraceTests(unittest.TestCase):
    self.assertEqual(x.returncode,0,x.stderr);self.assertEqual((target/"trace-0.jsonl").read_text(),json.dumps(r,sort_keys=True,separators=(",",":"))+"\n")
  def test_rejects_wrong_scalar_type(self):
   with tempfile.TemporaryDirectory() as root:
-   b=self.bundle(root);r=self.record();r["seq"]="1";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1");self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)
+   b=self.bundle(root);r=self.record();r["seq"]="1";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"typed"));self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)
  def test_accepts_lifecycle_record(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);r={"schema_version":1,"run_id":"run-1","seq":1,"t_ns":2,"level":"warning","component":"runtime","name":"run.stop"};(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");d=pathlib.Path(root)/"copy";x=self.trace(root,"export","run-1",str(d));self.assertEqual(x.returncode,0,x.stderr)

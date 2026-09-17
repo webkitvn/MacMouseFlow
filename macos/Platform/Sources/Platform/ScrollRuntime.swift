@@ -129,11 +129,11 @@ final class TapState: @unchecked Sendable {
 
     func disabledByTimeout() {
         timeoutCount += 1
-        trace?.lifecycle(4)
+        trace?.callbackLifecycle(4)
     }
     func reenable() {
         if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-        trace?.lifecycle(5)
+        trace?.callbackLifecycle(5)
     }
 
     func complete() {
@@ -235,6 +235,10 @@ public final class ScrollRuntime {
             if type == .tapDisabledByTimeout { state.disabledByTimeout() }
             state.reenable()
         } else {
+            guard let trace = state.trace else {
+                ScrollAdapter.process(event, engine: state.engine)
+                return Unmanaged.passUnretained(event)
+            }
             let start = DispatchTime.now().uptimeNanoseconds
             let lineBased = type == .scrollWheel && event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0
             let horizontal = lineBased ? event.getIntegerValueField(.scrollWheelEventDeltaAxis2) : 0
@@ -248,7 +252,7 @@ public final class ScrollRuntime {
             if decision == nil { code = lineBased ? 2 : 0 }
             else if case .preserve? = decision { code = 0 }
             else { code = 1 }
-            state.trace?.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: code == 1 ? 1 : 0, reason: lineBased ? (code == 1 ? 2 : (code == 2 ? 3 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start)
+            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: code == 1 ? 1 : 0, reason: lineBased ? (code == 1 ? 2 : (code == 2 ? 3 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start)
         }
         return Unmanaged.passUnretained(event)
     }
