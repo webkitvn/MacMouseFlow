@@ -26,6 +26,8 @@ public final class InputRuntime: ObservableObject {
 
     public init() {}
 
+    public var hasAccessibilityAccess: Bool { AXIsProcessTrusted() }
+
     public func setEnabled(_ enabled: Bool) {
         self.enabled = enabled
         if enabled {
