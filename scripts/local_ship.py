@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -30,6 +31,8 @@ BUNDLE_ID = "io.github.webkitvn.macmouseflow"
 APP_NAME = "MacMouseFlow.app"
 EXECUTABLE_NAME = "macmouseflow"
 LAUNCH_TIMEOUT_SECONDS = 5.0
+LAUNCH_HEALTH_SECONDS = 1.0
+LAUNCH_CLEANUP_SECONDS = 1.0
 CANDIDATE_OUT_DIR = ROOT / "target" / "local-ship" / "candidate"
 
 # macOS 14+ on Apple Silicon (arm64) only through v1 (ADR-0006; PR #90 review comment,
@@ -408,27 +411,54 @@ def validate_bundle_identity(bundle: Path) -> BundleValidation:
     return BundleValidation(True)
 
 
-def launch_probe(executable: Path) -> BundleValidation:
-    """Execute the installed main executable; success is exit 0 within 5s.
+def _exit_status_failure(status: int) -> BundleValidation:
+    """Classify a reaped child's exit status as a launch-probe failure."""
+    if status < 0:
+        return BundleValidation(False, f"terminated by signal {-status}")
+    return BundleValidation(False, f"exited during launch with status {status}")
 
-    A resident process is not required (design.md: "M0 launch probe").
+
+def launch_probe(executable: Path) -> BundleValidation:
+    """Start the installed executable and confirm it remains healthy briefly.
+
+    Output is discarded rather than piped: an unread pipe can fill and block the
+    child, which would then look alive (and healthy) for the whole window. A child
+    that has already exited by the final settled poll is classified as a failure, so
+    an exit landing after the last in-window poll is never reported as a healthy
+    resident process.
     """
     try:
-        result = subprocess.run(
-            [str(executable)],
-            timeout=LAUNCH_TIMEOUT_SECONDS,
-            capture_output=True,
-        )
-    except subprocess.TimeoutExpired:
-        return BundleValidation(False, "did not exit within 5 seconds")
+        process = subprocess.Popen([str(executable)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as exc:
         return BundleValidation(False, f"dynamic-loader/exec failure: {exc}")
 
-    if result.returncode < 0:
-        return BundleValidation(False, f"terminated by signal {-result.returncode}")
-    if result.returncode != 0:
-        return BundleValidation(False, f"nonzero exit status {result.returncode}")
-    return BundleValidation(True)
+    result = BundleValidation(True)
+    deadline = time.monotonic() + LAUNCH_HEALTH_SECONDS
+    try:
+        while True:
+            status = process.poll()
+            if status is not None:
+                result = _exit_status_failure(status)
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+    finally:
+        status = process.poll()
+        if status is not None:
+            if result.ok:
+                result = _exit_status_failure(status)
+        else:
+            process.terminate()
+            try:
+                process.wait(timeout=LAUNCH_CLEANUP_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.wait(timeout=LAUNCH_CLEANUP_SECONDS)
+                except subprocess.TimeoutExpired:
+                    result = BundleValidation(False, "did not exit after kill")
+    return result
 
 
 def guarded_launch_probe(executable: Path) -> BundleValidation:
@@ -553,6 +583,7 @@ def _render_info_plist() -> bytes:
             "CFBundleShortVersionString": "0.0.0-local",
             "CFBundleVersion": "1",
             "LSMinimumSystemVersion": "14.0",
+            "LSUIElement": True,
         }
     )
 
