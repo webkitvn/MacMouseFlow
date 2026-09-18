@@ -79,6 +79,9 @@ private struct SettingsView: View {
             .frame(minWidth: 500, minHeight: 360, alignment: .topLeading)
         }
         .background(SettingsWindowPresenter(request: request))
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            runtime.refresh()
+        }
     }
 
     @ViewBuilder private var page: some View {

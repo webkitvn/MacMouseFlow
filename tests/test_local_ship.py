@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import local_ship  # noqa: E402
 
 
-def make_bundle(root: pathlib.Path, name="fake.app", bundle_id=None, executable_name=None, exit_code=0, sleep_seconds=None, ignore_term=False):
+def make_bundle(root: pathlib.Path, name="fake.app", bundle_id=None, executable_name=None, exit_code=0, sleep_seconds=None, ignore_term=False, stdout_bytes=0):
     bundle_id = bundle_id or local_ship.BUNDLE_ID
     if sleep_seconds is None:
         sleep_seconds = 10 if exit_code == 0 else 0
@@ -33,8 +33,14 @@ def make_bundle(root: pathlib.Path, name="fake.app", bundle_id=None, executable_
     macos_dir = bundle / "Contents" / "MacOS"
     macos_dir.mkdir(parents=True)
     c_source = root / f"{name}-main.c"
+    write_output = (
+        f"char buf[4096]; for (int i = 0; i < 4096; i++) buf[i] = 120;"
+        f" for (int i = 0; i < {stdout_bytes // 4096}; i++) fwrite(buf, 1, 4096, stdout); fflush(stdout);"
+        if stdout_bytes
+        else ""
+    )
     c_source.write_text(
-        f"#include <signal.h>\n#include <unistd.h>\nint main(void) {{ {'signal(SIGTERM, SIG_IGN);' if ignore_term else ''} sleep({sleep_seconds}); return {exit_code}; }}\n"
+        f"#include <signal.h>\n#include <stdio.h>\n#include <unistd.h>\nint main(void) {{ {'signal(SIGTERM, SIG_IGN);' if ignore_term else ''} {write_output} sleep({sleep_seconds}); return {exit_code}; }}\n"
     )
     subprocess.run(
         ["cc", "-std=c11", str(c_source), "-o", str(macos_dir / executable_name)],
@@ -154,6 +160,28 @@ class BundleValidationTests(FakeHomeTestCase):
         self.assertFalse(probe.ok)
         self.assertIn("exited during launch", probe.reason)
 
+    def test_launch_probe_detects_output_heavy_executable_that_exits(self):
+        # A child that writes more than the OS pipe buffer and then exits must not be
+        # reported healthy: with an unread PIPE it would block on write and look alive
+        # for the entire window.
+        bundle = make_bundle(self.tmp_home, exit_code=0, sleep_seconds=0, stdout_bytes=1 << 20)
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertFalse(probe.ok)
+        self.assertIn("exited during launch", probe.reason)
+
+    def test_launch_probe_detects_exit_observed_by_final_cleanup_poll(self):
+        # Exact boundary: the single in-window poll sees the child alive, the deadline
+        # check then ends the loop, and the exit is observed only by the final settled
+        # poll - it must be classified as failure, not a healthy resident process.
+        process = mock.Mock()
+        process.poll.side_effect = [None, 0]
+        with mock.patch.object(local_ship.subprocess, "Popen", return_value=process), mock.patch.object(
+            local_ship.time, "monotonic", side_effect=[0, 2]
+        ):
+            probe = local_ship.launch_probe(pathlib.Path("fake"))
+        self.assertFalse(probe.ok)
+        self.assertIn("exited during launch with status 0", probe.reason)
+
     def test_launch_probe_bounds_cleanup_and_kills_uncooperative_child(self):
         bundle = make_bundle(self.tmp_home, sleep_seconds=10, ignore_term=True)
         started = time.monotonic()
@@ -165,8 +193,6 @@ class BundleValidationTests(FakeHomeTestCase):
         process = mock.Mock()
         process.poll.return_value = None
         process.wait.side_effect = [subprocess.TimeoutExpired([], 0), subprocess.TimeoutExpired([], 0)]
-        process.stdout = mock.Mock()
-        process.stderr = mock.Mock()
         with mock.patch.object(local_ship.subprocess, "Popen", return_value=process), mock.patch.object(local_ship.time, "monotonic", side_effect=[0, 2]):
             probe = local_ship.launch_probe(pathlib.Path("fake"))
         self.assertFalse(probe.ok)

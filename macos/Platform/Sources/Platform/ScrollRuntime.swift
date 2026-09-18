@@ -29,7 +29,10 @@ public enum ScrollAdapter {
 }
 
 final class TapState: @unchecked Sendable {
-    // This lock serializes public lifecycle calls only. The callback never takes it.
+    // Serializes lifecycle state and the published tap/source handles. The callback
+    // never takes it: `tap`/`source` are written only by the tap-owner thread (the
+    // thread running `run()` and the run-loop blocks), so the callback's lock-free
+    // reads are same-thread. The lock makes `runtimeStatus()`'s cross-thread read safe.
     private let lock = NSLock()
     let engine: PointerInputEngine
     let trace = TracePipeline()
@@ -77,11 +80,11 @@ final class TapState: @unchecked Sendable {
             complete()
             return
         }
-        self.tap = tap
-        self.source = source
         CFRunLoopAddSource(runLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         lock.lock()
+        self.tap = tap
+        self.source = source
         let shouldRun = lifecycle == .starting && CGEvent.tapIsEnabled(tap: tap)
         lifecycle = shouldRun ? .running : .cancelling
         self.runLoop = shouldRun ? runLoop : nil
@@ -117,7 +120,11 @@ final class TapState: @unchecked Sendable {
     func runtimeStatus() -> ScrollRuntimeStatus {
         lock.lock()
         defer { lock.unlock() }
-        return lifecycle == .running ? .active : .unavailable
+        // `.running` records that the run loop started, not that macOS still has the
+        // tap enabled: the callback may have failed to re-enable a tap disabled by
+        // timeout or user input. Report the live tap state so callers can react.
+        guard lifecycle == .running, let tap else { return .unavailable }
+        return CGEvent.tapIsEnabled(tap: tap) ? .active : .unavailable
     }
 
     func completedTimeoutCount() -> Int {
@@ -128,12 +135,17 @@ final class TapState: @unchecked Sendable {
     }
 
     func finishOnOwnerRunLoop() {
+        // Runs on the tap-owner thread. Publish the cleared handles under the lock
+        // before tearing the tap down, so no cross-thread `runtimeStatus()` reader can
+        // observe (or hold) a port that is being invalidated.
+        lock.lock()
+        let tap = self.tap
+        let source = self.source
+        self.tap = nil
+        self.source = nil
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }
-        source = nil
-        tap = nil
-        lock.lock()
         runLoop = nil
         lock.unlock()
     }

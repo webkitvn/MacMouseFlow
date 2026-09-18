@@ -411,27 +411,44 @@ def validate_bundle_identity(bundle: Path) -> BundleValidation:
     return BundleValidation(True)
 
 
+def _exit_status_failure(status: int) -> BundleValidation:
+    """Classify a reaped child's exit status as a launch-probe failure."""
+    if status < 0:
+        return BundleValidation(False, f"terminated by signal {-status}")
+    return BundleValidation(False, f"exited during launch with status {status}")
+
+
 def launch_probe(executable: Path) -> BundleValidation:
-    """Start the installed executable and confirm it remains healthy briefly."""
+    """Start the installed executable and confirm it remains healthy briefly.
+
+    Output is discarded rather than piped: an unread pipe can fill and block the
+    child, which would then look alive (and healthy) for the whole window. A child
+    that has already exited by the final settled poll is classified as a failure, so
+    an exit landing after the last in-window poll is never reported as a healthy
+    resident process.
+    """
     try:
-        process = subprocess.Popen([str(executable)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen([str(executable)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as exc:
         return BundleValidation(False, f"dynamic-loader/exec failure: {exc}")
 
     result = BundleValidation(True)
     deadline = time.monotonic() + LAUNCH_HEALTH_SECONDS
     try:
-        while time.monotonic() < deadline:
+        while True:
             status = process.poll()
             if status is not None:
-                if status < 0:
-                    result = BundleValidation(False, f"terminated by signal {-status}")
-                else:
-                    result = BundleValidation(False, f"exited during launch with status {status}")
+                result = _exit_status_failure(status)
+                break
+            if time.monotonic() >= deadline:
                 break
             time.sleep(0.01)
     finally:
-        if process.poll() is None:
+        status = process.poll()
+        if status is not None:
+            if result.ok:
+                result = _exit_status_failure(status)
+        else:
             process.terminate()
             try:
                 process.wait(timeout=LAUNCH_CLEANUP_SECONDS)
@@ -441,8 +458,6 @@ def launch_probe(executable: Path) -> BundleValidation:
                     process.wait(timeout=LAUNCH_CLEANUP_SECONDS)
                 except subprocess.TimeoutExpired:
                     result = BundleValidation(False, "did not exit after kill")
-        process.stdout.close()
-        process.stderr.close()
     return result
 
 
