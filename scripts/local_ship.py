@@ -15,11 +15,16 @@ import argparse
 import fcntl
 import hashlib
 import json
+import os
 import plistlib
 import re
+import select
 import shutil
+import stat
 import subprocess
 import sys
+import threading
+import time
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -30,6 +35,11 @@ BUNDLE_ID = "io.github.webkitvn.macmouseflow"
 APP_NAME = "MacMouseFlow.app"
 EXECUTABLE_NAME = "macmouseflow"
 LAUNCH_TIMEOUT_SECONDS = 5.0
+LAUNCH_HEALTH_SECONDS = 1.0
+LAUNCH_CLEANUP_SECONDS = 1.0
+# Bounded diagnostic capture for the launch probe: at most one fixed-path log, its
+# retained size capped. See `launch_probe`.
+LAUNCH_LOG_MAX_BYTES = 64 * 1024
 CANDIDATE_OUT_DIR = ROOT / "target" / "local-ship" / "candidate"
 
 # macOS 14+ on Apple Silicon (arm64) only through v1 (ADR-0006; PR #90 review comment,
@@ -83,6 +93,13 @@ def lifecycle_record_path() -> Path:
 
 def lifecycle_lock_path() -> Path:
     return local_ship_dir() / "lifecycle.lock"
+
+
+# The single, pipeline-owned diagnostic log for the most recent launch probe. A fixed
+# path (never a per-run file) keeps the artifact bounded: each probe truncates and
+# rewrites this one file, and a successful probe removes it.
+def probe_log_path() -> Path:
+    return local_ship_dir() / "launch-probe.log"
 
 
 def _read_lifecycle_record() -> Optional[dict]:
@@ -408,27 +425,237 @@ def validate_bundle_identity(bundle: Path) -> BundleValidation:
     return BundleValidation(True)
 
 
-def launch_probe(executable: Path) -> BundleValidation:
-    """Execute the installed main executable; success is exit 0 within 5s.
+def _exit_status_failure(status: int) -> BundleValidation:
+    """Classify a reaped child's exit status as a launch-probe failure."""
+    if status < 0:
+        return BundleValidation(False, f"terminated by signal {-status}")
+    return BundleValidation(False, f"exited during launch with status {status}")
 
-    A resident process is not required (design.md: "M0 launch probe").
+
+def _cleanup_race_failure(process: subprocess.Popen, result: BundleValidation) -> BundleValidation:
+    """Classify a child that exited between a liveness poll and a terminate/kill signal.
+
+    `ProcessLookupError` means the child is already gone, so it did not survive the
+    health window. Turn that into a structured result instead of letting the exception
+    abort validation after install/rollback state has already changed.
+    """
+    if not result.ok:
+        return result
+    status = process.poll()
+    if status is not None:
+        return _exit_status_failure(status)
+    return BundleValidation(False, "exited before termination")
+
+
+class _ProbeCapture:
+    """Continuously drains one combined stdout/stderr pipe, retaining only the tail.
+
+    The pipe is readable for the child's whole lifetime and is drained continuously,
+    so a chatty child is never left blocked on an unread pipe, and nothing is written
+    to disk while it runs: only the last `limit` bytes are kept, in memory. The tail
+    is materialized as the diagnostic log only when a probe fails. After shutdown it
+    drains remaining bytes through EOF or a short grace period, so flooding cannot pin it.
+    """
+
+    _CHUNK = 1 << 16
+    _POLL_SECONDS = 0.05
+    _STOP_DRAIN_SECONDS = 0.1
+
+    def __init__(self, stream, limit: int) -> None:
+        self._stream = stream
+        self._fd = stream.fileno()
+        # Read the pipe read end non-blocking (a separate open file description from
+        # the child's write end), so the drain can never block inside `os.read` and
+        # always re-checks the stop flag within `_POLL_SECONDS`. This is what makes
+        # teardown bounded even against a child that floods without end.
+        try:
+            os.set_blocking(self._fd, False)
+        except (OSError, TypeError, ValueError):
+            pass  # best-effort: a blocking read still re-checks the stop flag via select
+        self._limit = limit
+        self._buffer = bytearray()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._finished = threading.Event()
+        self._started = False
+        self._thread = threading.Thread(target=self._drain, name="MacMouseFlow launch-probe capture", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+        self._started = True
+
+    def _drain(self) -> None:
+        stop_deadline = None
+        try:
+            while True:
+                if self._stop.is_set():
+                    stop_deadline = stop_deadline or time.monotonic() + self._STOP_DRAIN_SECONDS
+                    if time.monotonic() >= stop_deadline:
+                        break
+                try:
+                    timeout = self._POLL_SECONDS if stop_deadline is None else min(self._POLL_SECONDS, stop_deadline - time.monotonic())
+                    readable, _, _ = select.select([self._fd], [], [], timeout)
+                    if not readable:
+                        if stop_deadline is not None:
+                            break
+                        continue
+                    chunk = os.read(self._fd, self._CHUNK)
+                except BlockingIOError:
+                    continue  # spurious readiness: re-check the stop flag
+                except (OSError, ValueError, TypeError):
+                    break
+                if not chunk:
+                    break  # write end closed: the child (and any inheritors) are gone
+                with self._lock:
+                    self._buffer += chunk
+                    if len(self._buffer) > self._limit:
+                        del self._buffer[:-self._limit]
+        finally:
+            self._finished.set()
+
+    def finish(self, timeout: float) -> bool:
+        """Stop draining and release the pipe, waiting at most `timeout` seconds."""
+        self._stop.set()
+        if not self._started:
+            # Setup never started the reader, so closing here cannot race a reader.
+            self._close_stream()
+            return True
+        drained = self._finished.wait(timeout)
+        if drained:
+            self._close_stream()
+        return drained
+
+    def tail(self) -> bytes:
+        with self._lock:
+            return bytes(self._buffer)
+
+    def _close_stream(self) -> None:
+        try:
+            self._stream.close()
+        except OSError:
+            pass
+
+
+def _materialize_probe_log(data: bytes) -> Optional[Path]:
+    """Atomically materialize the captured tail as the fixed probe log.
+
+    A fresh `mkstemp` file (owner-only, `O_EXCL`, verified regular) is written inside
+    the existing pipeline directory, then `os.replace`d onto `probe_log_path()`. An
+    existing file or planted symlink at that path is therefore replaced, never
+    followed or truncated. Returns the path, or `None` when materialization fails.
+    """
+    directory = local_ship_dir()
+    fd: Optional[int] = None
+    tmp_path: Optional[Path] = None
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=".launch-probe-", dir=directory)
+        tmp_path = Path(name)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("probe log temporary is not a regular file")
+        os.fchmod(fd, 0o600)
+        writer = os.fdopen(fd, "wb")
+        fd = None
+        with writer:
+            writer.write(data)
+        os.replace(tmp_path, probe_log_path())
+        tmp_path = None
+        return probe_log_path()
+    except OSError:
+        return None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _remove_probe_log() -> None:
+    """Remove the fixed probe log, if present. `unlink` never follows a symlink."""
+    try:
+        probe_log_path().unlink()
+    except OSError:
+        pass
+
+
+def launch_probe(executable: Path) -> BundleValidation:
+    """Start the installed executable and confirm it remains healthy briefly.
+
+    Startup stdout/stderr are captured through one combined pipe that a drain thread
+    reads continuously, so the child is never blocked on an unread pipe and nothing
+    unbounded is ever written to disk: only a bounded tail is retained in memory. A
+    failed launch materializes that tail as the owner-only fixed log and names its
+    path in the failure reason; a successful probe removes the log. A child that has
+    already exited by the final settled poll is classified as a failure, so an exit
+    landing after the last in-window poll is never reported as a healthy resident
+    process; a child that exits between that poll and our terminate/kill signal is
+    likewise reported as a structured failure rather than an exception.
     """
     try:
-        result = subprocess.run(
-            [str(executable)],
-            timeout=LAUNCH_TIMEOUT_SECONDS,
-            capture_output=True,
-        )
-    except subprocess.TimeoutExpired:
-        return BundleValidation(False, "did not exit within 5 seconds")
+        process = subprocess.Popen([str(executable)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     except OSError as exc:
         return BundleValidation(False, f"dynamic-loader/exec failure: {exc}")
 
-    if result.returncode < 0:
-        return BundleValidation(False, f"terminated by signal {-result.returncode}")
-    if result.returncode != 0:
-        return BundleValidation(False, f"nonzero exit status {result.returncode}")
-    return BundleValidation(True)
+    capture = _ProbeCapture(process.stdout, LAUNCH_LOG_MAX_BYTES)
+    result = BundleValidation(True)
+    deadline = time.monotonic() + LAUNCH_HEALTH_SECONDS
+    try:
+        try:
+            capture.start()
+        except RuntimeError as exc:
+            # Setup failure: the drain never began, so the pipe is released and the
+            # child reaped rather than left attached to an unread pipe.
+            result = BundleValidation(False, f"could not start launch-probe capture: {exc}")
+        if result.ok:
+            while True:
+                status = process.poll()
+                if status is not None:
+                    result = _exit_status_failure(status)
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
+    finally:
+        status = process.poll()
+        if status is not None:
+            if result.ok:
+                result = _exit_status_failure(status)
+        else:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                # The child exited between the poll above and this signal; report it
+                # instead of aborting validation with an uncaught exception.
+                result = _cleanup_race_failure(process, result)
+            else:
+                try:
+                    process.wait(timeout=LAUNCH_CLEANUP_SECONDS)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        result = _cleanup_race_failure(process, result)
+                    else:
+                        try:
+                            process.wait(timeout=LAUNCH_CLEANUP_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            result = BundleValidation(False, "did not exit after kill")
+        capture.finish(LAUNCH_CLEANUP_SECONDS)
+
+    if result.ok:
+        # A healthy probe keeps no diagnostics: no retention framework, no stale log.
+        _remove_probe_log()
+        return result
+    log_path = _materialize_probe_log(capture.tail())
+    if log_path is None:
+        return result
+    return BundleValidation(False, f"{result.reason}; startup output: {log_path}")
 
 
 def guarded_launch_probe(executable: Path) -> BundleValidation:
@@ -553,6 +780,7 @@ def _render_info_plist() -> bytes:
             "CFBundleShortVersionString": "0.0.0-local",
             "CFBundleVersion": "1",
             "LSMinimumSystemVersion": "14.0",
+            "LSUIElement": True,
         }
     )
 

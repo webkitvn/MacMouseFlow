@@ -7,12 +7,15 @@ All tests operate under an isolated fake $HOME so no real ~/Applications or
 
 import fcntl
 import json
+import os
 import pathlib
 import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -22,14 +25,31 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import local_ship  # noqa: E402
 
 
-def make_bundle(root: pathlib.Path, name="fake.app", bundle_id=None, executable_name=None, exit_code=0):
+def make_bundle(root: pathlib.Path, name="fake.app", bundle_id=None, executable_name=None, exit_code=0, sleep_seconds=None, ignore_term=False, stdout_bytes=0, stderr_text="", flood=False, warm_up=True):
     bundle_id = bundle_id or local_ship.BUNDLE_ID
+    if sleep_seconds is None:
+        sleep_seconds = 10 if exit_code == 0 else 0
     executable_name = executable_name or local_ship.EXECUTABLE_NAME
     bundle = root / name
     macos_dir = bundle / "Contents" / "MacOS"
     macos_dir.mkdir(parents=True)
     c_source = root / f"{name}-main.c"
-    c_source.write_text(f"int main(void) {{ return {exit_code}; }}\n")
+    if flood:
+        write_output = (
+            "char buf[65536]; for (int i = 0; i < 65536; i++) buf[i] = 120;"
+            " for (;;) { if (fwrite(buf, 1, 65536, stdout) != 65536) return 9; fflush(stdout); }"
+        )
+    elif stdout_bytes:
+        write_output = (
+            f"char buf[4096]; for (int i = 0; i < 4096; i++) buf[i] = 120;"
+            f" for (int i = 0; i < {stdout_bytes // 4096}; i++) fwrite(buf, 1, 4096, stdout); fflush(stdout);"
+        )
+    else:
+        write_output = ""
+    write_error = f'fputs("{stderr_text}", stderr); fflush(stderr);' if stderr_text else ""
+    c_source.write_text(
+        f"#include <signal.h>\n#include <stdio.h>\n#include <unistd.h>\nint main(void) {{ {'signal(SIGTERM, SIG_IGN);' if ignore_term else ''} {write_output} {write_error} sleep({sleep_seconds}); return {exit_code}; }}\n"
+    )
     subprocess.run(
         ["cc", "-std=c11", str(c_source), "-o", str(macos_dir / executable_name)],
         check=True,
@@ -42,6 +62,10 @@ def make_bundle(root: pathlib.Path, name="fake.app", bundle_id=None, executable_
     }
     (bundle / "Contents" / "Info.plist").write_bytes(plistlib.dumps(plist))
     subprocess.run(["codesign", "--sign", "-", "--force", str(bundle)], check=True, capture_output=True)
+    # The probe means "not exited within LAUNCH_HEALTH_SECONDS" and assumes prompt exec;
+    # a cold exec that stalls past it is reported healthy (pre-existing fail-open heuristic).
+    if warm_up and sleep_seconds == 0 and not flood:
+        subprocess.run([str(macos_dir / executable_name)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=local_ship.LAUNCH_TIMEOUT_SECONDS)
     return bundle
 
 
@@ -131,21 +155,238 @@ class BundleValidationTests(FakeHomeTestCase):
         self.assertIn("launch probe", result.reason)
 
     def test_launch_probe_reports_nonzero_exit(self):
-        bundle = make_bundle(self.tmp_home, exit_code=3)
+        bundle = make_bundle(self.tmp_home, exit_code=3, sleep_seconds=0)
         probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
         self.assertFalse(probe.ok)
         self.assertIn("3", probe.reason)
 
-    def test_launch_probe_accepts_exit_zero(self):
-        bundle = make_bundle(self.tmp_home, exit_code=0)
+    def test_launch_probe_accepts_resident_process_and_terminates_it(self):
+        bundle = make_bundle(self.tmp_home, sleep_seconds=10)
+        executable = bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        probe = local_ship.launch_probe(executable)
+        self.assertTrue(probe.ok, probe.reason)
+
+    def test_launch_probe_rejects_exit_zero_before_health_window(self):
+        bundle = make_bundle(self.tmp_home, exit_code=0, sleep_seconds=0)
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertFalse(probe.ok)
+        self.assertIn("exited during launch", probe.reason)
+
+    def test_launch_probe_detects_output_heavy_executable_that_exits(self):
+        # A child that writes far more than the OS pipe buffer and then exits must not
+        # be reported healthy: with an unread pipe it would block on write and look
+        # alive for the entire window. The reviewer's 5 MiB reproduction.
+        bundle = make_bundle(self.tmp_home, exit_code=0, sleep_seconds=0, stdout_bytes=5 << 20)
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertFalse(probe.ok)
+        self.assertIn("exited during launch", probe.reason)
+
+    def test_launch_probe_detects_exit_observed_by_final_cleanup_poll(self):
+        # Exact boundary: the single in-window poll sees the child alive, the deadline
+        # check then ends the loop, and the exit is observed only by the final settled
+        # poll - it must be classified as failure, not a healthy resident process.
+        process = mock.Mock()
+        process.poll.side_effect = [None, 0]
+        with mock.patch.object(local_ship.subprocess, "Popen", return_value=process), mock.patch.object(
+            local_ship.time, "monotonic", side_effect=[0, 2]
+        ):
+            probe = local_ship.launch_probe(pathlib.Path("fake"))
+        self.assertFalse(probe.ok)
+        self.assertIn("exited during launch with status 0", probe.reason)
+
+    def test_launch_probe_returns_structured_failure_when_child_exits_before_terminate(self):
+        # Exact cleanup race: the final settled poll reports the child alive, then it
+        # exits before terminate() runs, so terminate() raises ProcessLookupError. The
+        # probe must classify the exit, not abort validation with an exception.
+        process = mock.Mock()
+        process.poll.side_effect = [None, None, 0]
+        process.terminate.side_effect = ProcessLookupError()
+        with mock.patch.object(local_ship.subprocess, "Popen", return_value=process), mock.patch.object(
+            local_ship.time, "monotonic", side_effect=[0, 2]
+        ):
+            probe = local_ship.launch_probe(pathlib.Path("fake"))
+        self.assertFalse(probe.ok)
+        self.assertIn("exited during launch with status 0", probe.reason)
+        process.terminate.assert_called_once()
+        process.kill.assert_not_called()
+        process.wait.assert_not_called()
+
+    def test_launch_probe_failure_reason_carries_restricted_diagnostic_log(self):
+        bundle = make_bundle(self.tmp_home, exit_code=5, sleep_seconds=0, stderr_text="boom: missing dylib")
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertFalse(probe.ok)
+
+        log = local_ship.probe_log_path()
+        self.assertTrue(log.is_file())
+        self.assertEqual(log.parent, local_ship.local_ship_dir())
+        self.assertNotIn(str(ROOT), str(log))  # never leaks into the source tree
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        self.assertIn("boom: missing dylib", log.read_text())
+        self.assertIn(str(log), probe.reason)
+
+    def test_launch_probe_caps_retained_diagnostic_log(self):
+        bundle = make_bundle(self.tmp_home, exit_code=6, sleep_seconds=0, stdout_bytes=1 << 20)
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertFalse(probe.ok)
+        self.assertLessEqual(local_ship.probe_log_path().stat().st_size, local_ship.LAUNCH_LOG_MAX_BYTES)
+
+    def test_launch_probe_removes_diagnostic_log_on_success(self):
+        log = local_ship.probe_log_path()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("stale diagnostics from an earlier failure")
+
+        bundle = make_bundle(self.tmp_home, sleep_seconds=10)
         probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
         self.assertTrue(probe.ok, probe.reason)
+        self.assertFalse(log.exists())
+
+    def test_launch_probe_does_not_block_on_chatty_resident_child(self):
+        # Far more than a pipe buffer of startup output, then stay resident: the probe
+        # drains the capture pipe continuously, so the child never blocks on it.
+        bundle = make_bundle(self.tmp_home, sleep_seconds=10, stdout_bytes=1 << 20)
+        started = time.monotonic()
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertTrue(probe.ok, probe.reason)
+        self.assertLess(time.monotonic() - started, local_ship.LAUNCH_HEALTH_SECONDS + local_ship.LAUNCH_CLEANUP_SECONDS + 1)
+
+    def test_launch_probe_bounds_storage_while_flood_child_runs(self):
+        # The reviewer's reproduction: a child flooding far past the cap must never
+        # cause more than LAUNCH_LOG_MAX_BYTES of probe storage while it runs. Capture
+        # is drained into a bounded in-memory tail, so no log file exists on disk until
+        # a failure is materialized.
+        bundle = make_bundle(self.tmp_home, sleep_seconds=10, flood=True)
+        executable = bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        log = local_ship.probe_log_path()
+        observed = []
+        outcome = []
+
+        # Daemon so that even a hypothetical stuck probe can never block interpreter
+        # exit; the bounded join below makes it a test failure instead of a wedge.
+        worker = threading.Thread(target=lambda: outcome.append(local_ship.launch_probe(executable)), daemon=True)
+        worker.start()
+        deadline = time.monotonic() + 30
+        while worker.is_alive() and time.monotonic() < deadline:
+            observed.append(log.stat().st_size if log.exists() else 0)
+            time.sleep(0.005)
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "launch_probe did not return while a flood child ran")
+
+        self.assertTrue(outcome[0].ok, outcome[0].reason)
+        self.assertLessEqual(max(observed, default=0), local_ship.LAUNCH_LOG_MAX_BYTES)
+
+    def test_probe_capture_drains_buffered_output_after_stop(self):
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        capture = local_ship._ProbeCapture(stream, 1024)
+        payload = b"final diagnostics"
+        try:
+            os.write(write_fd, payload)
+            capture._stop.set()
+            capture.start()
+            self.assertTrue(capture.finish(local_ship.LAUNCH_CLEANUP_SECONDS))
+            self.assertIn(payload, capture.tail())
+        finally:
+            os.close(write_fd)
+            capture.finish(local_ship.LAUNCH_CLEANUP_SECONDS)
+
+    def test_probe_capture_stops_while_pipe_stays_readable(self):
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        stop = threading.Event()
+
+        def write_forever():
+            while not stop.is_set():
+                try:
+                    os.write(write_fd, b"x" * 4096)
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    return
+
+        os.set_blocking(write_fd, False)
+        writer = threading.Thread(target=write_forever)
+        capture = local_ship._ProbeCapture(stream, 1024)
+        try:
+            writer.start()
+            capture.start()
+            self.assertTrue(capture.finish(local_ship.LAUNCH_CLEANUP_SECONDS))
+        finally:
+            stop.set()
+            os.close(write_fd)
+            writer.join(timeout=local_ship.LAUNCH_CLEANUP_SECONDS)
+            capture.finish(local_ship.LAUNCH_CLEANUP_SECONDS)
+
+    def test_launch_probe_failure_does_not_follow_probe_log_symlink(self):
+        # A planted symlink at the fixed path must be replaced, never followed or
+        # truncated: the link target has to survive untouched.
+        victim = self.tmp_home / "victim.txt"
+        victim.write_text("do not touch")
+        log = local_ship.probe_log_path()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.symlink_to(victim)
+
+        bundle = make_bundle(self.tmp_home, exit_code=7, sleep_seconds=0)
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+
+        self.assertFalse(probe.ok)
+        self.assertEqual(victim.read_text(), "do not touch")
+        self.assertFalse(log.is_symlink())
+        self.assertTrue(log.is_file())
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    def test_launch_probe_setup_failure_is_structured_and_releases_pipe(self):
+        # Setup failure (the drain thread cannot start): the probe must return a
+        # structured failure, release the pipe, and still reap the child.
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.stdout = mock.Mock()
+        with mock.patch.object(local_ship.subprocess, "Popen", return_value=process), mock.patch.object(
+            local_ship.threading.Thread, "start", side_effect=RuntimeError("cannot start thread")
+        ):
+            probe = local_ship.launch_probe(pathlib.Path("fake"))
+
+        self.assertFalse(probe.ok)
+        self.assertIn("could not start launch-probe capture", probe.reason)
+        process.stdout.close.assert_called_once()
+        process.terminate.assert_called_once()
+
+    def test_launch_probe_materialization_failure_is_structured_without_leftovers(self):
+        bundle = make_bundle(self.tmp_home, exit_code=8, sleep_seconds=0)
+        executable = bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        with mock.patch.object(local_ship.os, "fchmod", side_effect=OSError("denied")):
+            probe = local_ship.launch_probe(executable)
+
+        self.assertFalse(probe.ok)
+        self.assertIn("exited during launch with status 8", probe.reason)
+        self.assertNotIn("startup output", probe.reason)
+        self.assertFalse(local_ship.probe_log_path().exists())
+        self.assertEqual(list(local_ship.local_ship_dir().glob(".launch-probe-*")), [])
+
+    def test_launch_probe_bounds_cleanup_and_kills_uncooperative_child(self):
+        bundle = make_bundle(self.tmp_home, sleep_seconds=10, ignore_term=True)
+        started = time.monotonic()
+        probe = local_ship.launch_probe(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME)
+        self.assertTrue(probe.ok, probe.reason)
+        self.assertLess(time.monotonic() - started, local_ship.LAUNCH_HEALTH_SECONDS + local_ship.LAUNCH_CLEANUP_SECONDS + 1)
+
+    def test_launch_probe_fails_when_killed_process_cannot_be_reaped(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.wait.side_effect = [subprocess.TimeoutExpired([], 0), subprocess.TimeoutExpired([], 0)]
+        with mock.patch.object(local_ship.subprocess, "Popen", return_value=process), mock.patch.object(local_ship.time, "monotonic", side_effect=[0, 2]):
+            probe = local_ship.launch_probe(pathlib.Path("fake"))
+        self.assertFalse(probe.ok)
+        self.assertIn("did not exit after kill", probe.reason)
+        process.kill.assert_called_once()
+
+    def test_rendered_info_plist_marks_menu_bar_utility(self):
+        self.assertTrue(plistlib.loads(local_ship._render_info_plist())["LSUIElement"])
 
     def test_validate_static_identity_does_not_execute_the_candidate(self):
         # A candidate that would fail its launch probe must still pass the static
         # (identity + ad-hoc signature only) check; the launch probe is proven only
         # after the candidate is committed to the canonical active path (install()).
-        bundle = make_bundle(self.tmp_home, exit_code=9)
+        bundle = make_bundle(self.tmp_home, exit_code=9, warm_up=False)
         result = local_ship.validate_static_identity(bundle)
         self.assertTrue(result.ok, result.reason)
 
