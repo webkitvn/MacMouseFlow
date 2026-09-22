@@ -4,6 +4,34 @@ import Platform
 import XCTest
 
 final class ScrollRuntimeTests: XCTestCase {
+    func testConcurrentEngineCreationRetriesBusy() {
+        let workers = 8
+        let ready = DispatchGroup()
+        let finished = DispatchGroup()
+        let start = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var engines: [PointerInputEngine] = []
+
+        for _ in 0..<workers {
+            ready.enter()
+            finished.enter()
+            Thread {
+                ready.leave()
+                start.wait()
+                if let engine = PointerInputEngine() {
+                    lock.lock()
+                    engines.append(engine)
+                    lock.unlock()
+                }
+                finished.leave()
+            }.start()
+        }
+        ready.wait()
+        for _ in 0..<workers { start.signal() }
+        finished.wait()
+        XCTAssertEqual(engines.count, workers)
+    }
+
     func testLineBasedAxesReverseThroughABI() throws {
         let engine = try XCTUnwrap(PointerInputEngine())
         XCTAssertTrue(engine.setReverseDirection())

@@ -1,7 +1,9 @@
 import CPointerInput
+import Foundation
 
 private let abiVersion: UInt32 = 1
 private let successStatus: UInt32 = 0
+private let busyStatus: UInt32 = 4
 private let systemDirection: UInt32 = 0
 private let reverseDirection: UInt32 = 1
 private let unknownSource: UInt32 = 2
@@ -18,7 +20,13 @@ public final class PointerInputEngine {
     private var owner: UnsafeMutableRawPointer?
 
     public init?() {
-        guard pointer_input_engine_create_v1(&owner) == successStatus, owner != nil else { return nil }
+        for _ in 0..<10 {
+            let status = pointer_input_engine_create_v1(&owner)
+            if status == successStatus, owner != nil { return }
+            guard status == busyStatus else { return nil }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        return nil
     }
 
     deinit { _ = pointer_input_engine_destroy_v1(&owner) }
