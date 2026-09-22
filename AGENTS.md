@@ -66,6 +66,7 @@ A zero-context agent must be able to answer from tracker/repository state alone:
 - External products and codebases are research inputs, not implementation or test oracles. Preserve the routing: reference observation → independent validation/project decision → established public seam → test/implementation. `/Users/cuongpham/Projects/repo-x` is an optional local research input only: if absent, continue without hunting for it; never use it as an implementation/test oracle or copy/mechanically transform its expression.
 - Do not copy or mechanically transform external code, comments, documentation prose, tests, distinctive naming, module structure, control flow, or product expression.
 - A reference-derived observation must not directly become an expected test value or architecture choice. If the expected behavior cannot be justified without the reference, research or decide first.
+- When asking or consulting Oracle for second-model review, architecture feedback, or design validation, always use the dedicated ChatGPT project: `https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project` (e.g., passing `--chatgpt-url https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project` to Oracle). Treat responses as advisory and independently verify them against the codebase and tests.
 
 ## M0 + v0.1 architecture guardrails
 
