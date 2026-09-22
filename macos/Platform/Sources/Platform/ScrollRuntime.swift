@@ -3,7 +3,7 @@ import Bridge
 import CoreGraphics
 import Foundation
 
-public enum ScrollRuntimeStatus: Equatable {
+public enum ScrollRuntimeStatus: Equatable, Sendable {
     case active
     case unavailable
 }
