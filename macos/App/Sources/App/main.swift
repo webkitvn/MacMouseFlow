@@ -11,10 +11,11 @@ struct MacMouseFlowApp: App {
         MenuBarExtra("MacMouseFlow", systemImage: runtime.state == .active ? "scroll" : "scroll.fill") {
             LabeledContent("Status", value: runtime.state.userLabel)
             Divider()
-            Toggle("Enable for this session", isOn: Binding(
-                get: { runtime.state != .off },
+            Toggle("Enable", isOn: Binding(
+                get: { runtime.configuration.enabled },
                 set: { runtime.setEnabled($0) }
             ))
+            .disabled(!runtime.canEditConfiguration)
             if runtime.state == .needsAccessibilityAccess {
                 Button("Request Accessibility Access") { runtime.requestAccessibilityAccess() }
             }
@@ -133,13 +134,26 @@ private struct ScrollingPane: View {
     var body: some View {
         Form {
             Section("Line-Based Scrolling") {
-                Toggle("Enable for this session", isOn: Binding(
-                    get: { runtime.state != .off },
+                Toggle("Enable", isOn: Binding(
+                    get: { runtime.configuration.enabled },
                     set: { runtime.setEnabled($0) }
                 ))
-                Text("Turn this on when you want MacMouseFlow to watch for supported scroll input during this session.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Picker("Line direction", selection: Binding(
+                    get: { runtime.configuration.direction },
+                    set: { runtime.setDirection($0) }
+                )) {
+                    Text("Preserve").tag(ScrollDirection.preserve)
+                    Text("Reverse").tag(ScrollDirection.reverse)
+                }
+                .disabled(!runtime.canEditConfiguration)
+                if runtime.configurationAttention == .malformed {
+                    Text("Your configuration could not be read. Changes are disabled until you reset it.")
+                    Button("Reset Configuration") { runtime.resetMalformedConfiguration() }
+                } else if runtime.configurationAttention == .newerSchema {
+                    Text("This configuration was created by a newer version. It is read-only and has not been changed.")
+                } else if runtime.configurationAttention == .saveFailed {
+                    Text("Your changes could not be saved. Your previous settings are still in use.")
+                }
             }
             Section("What changes") {
                 Text("During this session, the runtime monitors eligible line-based scroll input.")
@@ -259,7 +273,8 @@ private extension InputRuntimeState {
         case .off: "Off"
         case .needsAccessibilityAccess: "Needs Accessibility Access"
         case .active: "Active"
-        case .inputUnavailable, .configurationNeedsAttention: "Input Unavailable"
+        case .inputUnavailable: "Input Unavailable"
+        case .configurationNeedsAttention: "Configuration Needs Attention"
         }
     }
 

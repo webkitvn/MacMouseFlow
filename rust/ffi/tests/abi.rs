@@ -3,9 +3,9 @@ use pointer_input_ffi::{
     POINTER_INPUT_DECISION_REPLACE_V1, POINTER_INPUT_DIRECTION_REVERSE_V1,
     POINTER_INPUT_GRANULARITY_LINE_BASED_V1, POINTER_INPUT_GRANULARITY_PIXEL_BASED_V1,
     POINTER_INPUT_SOURCE_UNKNOWN_V1, PointerInputConfigurationV1, PointerInputDecisionV1,
-    PointerInputEventV1, PointerInputStatusV1, pointer_input_engine_create_v1,
-    pointer_input_engine_destroy_v1, pointer_input_engine_evaluate_v1,
-    pointer_input_engine_set_configuration_v1,
+    PointerInputEventV1, PointerInputStatusV1, pointer_input_configuration_validate_v1,
+    pointer_input_engine_create_v1, pointer_input_engine_destroy_v1,
+    pointer_input_engine_evaluate_v1, pointer_input_engine_set_configuration_v1,
 };
 
 fn event(granularity: u32, horizontal_lines: i64, vertical_lines: i64) -> PointerInputEventV1 {
@@ -108,6 +108,46 @@ fn rejects_invalid_event_tags_with_initialized_preserve_output() {
     assert_eq!(
         unsafe { pointer_input_engine_evaluate_v1(engine, &raw const input, &raw mut output) },
         PointerInputStatusV1::InvalidArgument
+    );
+    assert_eq!(output.decision, POINTER_INPUT_DECISION_PRESERVE_V1);
+    assert_eq!(
+        unsafe { pointer_input_engine_destroy_v1(&raw mut engine) },
+        PointerInputStatusV1::Success
+    );
+}
+
+#[test]
+fn validation_accepts_valid_configuration_and_rejects_null_or_invalid_layout_without_mutation() {
+    let mut engine = core::ptr::null_mut();
+    let mut output = decision();
+    let configuration = PointerInputConfigurationV1 {
+        version: POINTER_INPUT_ABI_VERSION_V1,
+        size: size_of::<PointerInputConfigurationV1>() as u32,
+        direction: POINTER_INPUT_DIRECTION_REVERSE_V1,
+        reserved: 0,
+    };
+    let invalid = PointerInputConfigurationV1 {
+        reserved: 1,
+        ..configuration
+    };
+    let input = event(POINTER_INPUT_GRANULARITY_LINE_BASED_V1, 0, 3);
+
+    assert_eq!(
+        unsafe { pointer_input_configuration_validate_v1(&raw const configuration) },
+        PointerInputStatusV1::Success
+    );
+    assert_eq!(
+        unsafe { pointer_input_configuration_validate_v1(&raw const invalid) },
+        PointerInputStatusV1::InvalidArgument
+    );
+    assert_eq!(
+        unsafe { pointer_input_configuration_validate_v1(core::ptr::null()) },
+        PointerInputStatusV1::InvalidArgument
+    );
+    assert_eq!(create(&mut engine), PointerInputStatusV1::Success);
+    assert_eq!(
+        unsafe { pointer_input_engine_evaluate_v1(engine, &raw const input, &raw mut output) },
+        PointerInputStatusV1::Success
     );
     assert_eq!(output.decision, POINTER_INPUT_DECISION_PRESERVE_V1);
     assert_eq!(

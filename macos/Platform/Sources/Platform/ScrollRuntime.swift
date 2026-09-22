@@ -199,9 +199,8 @@ public final class ScrollRuntime {
     private let coordinatorLock = NSLock()
     private var joined = false
 
-    public init?(reverseForHarness: Bool = false) {
-        guard AXIsProcessTrusted(), let engine = PointerInputEngine() else { return nil }
-        guard reverseForHarness ? engine.setReverseDirection() : engine.setSystemDirection() else { return nil }
+    public init?(direction: ScrollDirection = .preserve) {
+        guard AXIsProcessTrusted(), let engine = PointerInputEngine(), engine.setDirection(direction) else { return nil }
         let state = TapState(engine: engine)
         self.state = state
         thread = Thread { state.run() }
