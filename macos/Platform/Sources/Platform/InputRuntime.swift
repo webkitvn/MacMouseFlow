@@ -120,7 +120,6 @@ private final class LifecycleExecutor: @unchecked Sendable {
     var onStatus: ((ScrollRuntimeStatus) -> Void)?
 
     private var runtime: ScrollRuntime?
-    private var publishedStatus: ScrollRuntimeStatus = .unavailable
     private var startFailures = 0
     private var nextStartAllowed = DispatchTime.now()
 
@@ -273,10 +272,9 @@ private final class LifecycleExecutor: @unchecked Sendable {
     }
 
     private func publish(_ status: ScrollRuntimeStatus) {
+        // Every observation is delivered: episode resets otherwise leave the façade stale (PR #95 N1).
         // No stale callback may outlive shutdown.
         guard !isShutdown() else { return }
-        guard status != publishedStatus else { return }
-        publishedStatus = status
         DispatchQueue.main.async { [weak self] in self?.onStatus?(status) }
     }
 }

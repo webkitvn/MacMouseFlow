@@ -453,12 +453,13 @@ class _ProbeCapture:
     The pipe is readable for the child's whole lifetime and is drained continuously,
     so a chatty child is never left blocked on an unread pipe, and nothing is written
     to disk while it runs: only the last `limit` bytes are kept, in memory. The tail
-    is materialized as the diagnostic log only when a probe fails. Shutdown checks
-    the stop flag before each read, so a flooding child cannot pin the reader thread.
+    is materialized as the diagnostic log only when a probe fails. After shutdown it
+    drains remaining bytes through EOF or a short grace period, so flooding cannot pin it.
     """
 
     _CHUNK = 1 << 16
     _POLL_SECONDS = 0.05
+    _STOP_DRAIN_SECONDS = 0.1
 
     def __init__(self, stream, limit: int) -> None:
         self._stream = stream
@@ -484,12 +485,18 @@ class _ProbeCapture:
         self._started = True
 
     def _drain(self) -> None:
+        stop_deadline = None
         try:
-            while not self._stop.is_set():
+            while True:
+                if self._stop.is_set():
+                    stop_deadline = stop_deadline or time.monotonic() + self._STOP_DRAIN_SECONDS
+                    if time.monotonic() >= stop_deadline:
+                        break
                 try:
-                    readable, _, _ = select.select([self._fd], [], [], self._POLL_SECONDS)
+                    timeout = self._POLL_SECONDS if stop_deadline is None else min(self._POLL_SECONDS, stop_deadline - time.monotonic())
+                    readable, _, _ = select.select([self._fd], [], [], timeout)
                     if not readable:
-                        if self._stop.is_set():
+                        if stop_deadline is not None:
                             break
                         continue
                     chunk = os.read(self._fd, self._CHUNK)

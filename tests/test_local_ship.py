@@ -274,6 +274,21 @@ class BundleValidationTests(FakeHomeTestCase):
         self.assertTrue(outcome[0].ok, outcome[0].reason)
         self.assertLessEqual(max(observed, default=0), local_ship.LAUNCH_LOG_MAX_BYTES)
 
+    def test_probe_capture_drains_buffered_output_after_stop(self):
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        capture = local_ship._ProbeCapture(stream, 1024)
+        payload = b"final diagnostics"
+        try:
+            os.write(write_fd, payload)
+            capture._stop.set()
+            capture.start()
+            self.assertTrue(capture.finish(local_ship.LAUNCH_CLEANUP_SECONDS))
+            self.assertIn(payload, capture.tail())
+        finally:
+            os.close(write_fd)
+            capture.finish(local_ship.LAUNCH_CLEANUP_SECONDS)
+
     def test_probe_capture_stops_while_pipe_stays_readable(self):
         read_fd, write_fd = os.pipe()
         stream = os.fdopen(read_fd, "rb", buffering=0)
