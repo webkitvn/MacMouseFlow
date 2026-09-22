@@ -50,7 +50,14 @@ public final class ConfigurationStore {
     }
 
     public func load() -> (PersistedConfiguration, ConfigurationAttention) {
-        guard let data = try? Data(contentsOf: url) else { return (.default, .none) }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch CocoaError.fileReadNoSuchFile {
+            return (.default, .none)
+        } catch {
+            return (.default, .malformed)
+        }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let version = object["schema_version"] as? NSNumber,
               CFGetTypeID(version) != CFBooleanGetTypeID() else { return (.default, .malformed) }

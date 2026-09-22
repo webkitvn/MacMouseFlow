@@ -28,6 +28,15 @@ final class ConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(ConfigurationStore(directory: directory).load().0, expected)
     }
 
+    func testUnreadableConfigurationDefaultsWithAttentionWithoutRewrite() throws {
+        let store = ConfigurationStore(directory: directory)
+        try FileManager.default.createDirectory(at: store.url, withIntermediateDirectories: true)
+
+        XCTAssertEqual(store.load().0, .default)
+        XCTAssertEqual(store.load().1, .malformed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.url.path))
+    }
+
     func testMalformedConfigurationDefaultsWithoutRewrite() throws {
         let store = ConfigurationStore(directory: directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

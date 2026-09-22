@@ -203,9 +203,19 @@ private final class LifecycleExecutor: @unchecked Sendable {
             return
         }
         let latest = latestIntent()
-        guard latest.enabled, latest.trusted, latest.revision == desired.revision, latest.direction == desired.direction, candidate.status == .active else {
+        guard latest.enabled, latest.trusted else {
             candidate.stop()
-            if latest.enabled && latest.trusted { registerStartFailure() } else { resetRetry() }
+            resetRetry()
+            publish(.unavailable)
+            return
+        }
+        guard latest.revision == desired.revision, latest.direction == desired.direction else {
+            candidate.stop()
+            return reconcile()
+        }
+        guard candidate.status == .active else {
+            candidate.stop()
+            registerStartFailure()
             publish(.unavailable)
             return
         }

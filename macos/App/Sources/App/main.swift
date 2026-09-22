@@ -138,6 +138,7 @@ private struct ScrollingPane: View {
                     get: { runtime.configuration.enabled },
                     set: { runtime.setEnabled($0) }
                 ))
+                .disabled(!runtime.canEditConfiguration)
                 Picker("Line direction", selection: Binding(
                     get: { runtime.configuration.direction },
                     set: { runtime.setDirection($0) }

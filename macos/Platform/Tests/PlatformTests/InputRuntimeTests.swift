@@ -3,6 +3,20 @@ import Platform
 import XCTest
 
 final class InputRuntimeTests: XCTestCase {
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private func runtime() -> InputRuntime {
+        InputRuntime(store: ConfigurationStore(directory: directory))
+    }
+
     func testStateResolutionContract() {
         XCTAssertEqual(InputRuntimeState.resolve(enabled: false, accessibilityTrusted: true, runtimeStatus: .active, attention: .none), .off)
         XCTAssertEqual(InputRuntimeState.resolve(enabled: false, accessibilityTrusted: false, runtimeStatus: .unavailable, attention: .none), .off)
@@ -13,17 +27,15 @@ final class InputRuntimeTests: XCTestCase {
     }
 
     func testEnablingPublishesTruthfulNonActiveStateSynchronously() {
-        let runtime = InputRuntime()
+        let runtime = runtime()
         runtime.setEnabled(true)
-        // Intent is recorded and published on the caller's thread; lifecycle work runs
-        // on the executor, so a successful start cannot already be observable here.
         XCTAssertNotEqual(runtime.state, .active)
         XCTAssertNotEqual(runtime.state, .off)
         runtime.setEnabled(false)
     }
 
     func testDisablePublishesOffWithoutApprovalFromLifecycleExecutor() {
-        let runtime = InputRuntime()
+        let runtime = runtime()
         runtime.setEnabled(true)
         runtime.setEnabled(false)
         XCTAssertEqual(runtime.state, .off)
@@ -33,8 +45,6 @@ final class InputRuntimeTests: XCTestCase {
     }
 
     func testFailedSaveKeepsCommittedEnabledDirectionThroughRefresh() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
         let store = ConfigurationStore(directory: directory)
         let committed = PersistedConfiguration(enabled: true, direction: .reverse)
         XCTAssertTrue(store.persist(committed))
@@ -52,14 +62,11 @@ final class InputRuntimeTests: XCTestCase {
     }
 
     func testReleasingRuntimeDoesNotBlockOrPoisonSubsequentRuntimes() {
-        // Exercises the executor teardown submission path from a public seam: releasing
-        // an enabled runtime must return on the caller's thread, and a replacement
-        // runtime must be independently usable afterwards.
-        var retiring: InputRuntime? = InputRuntime()
+        var retiring: InputRuntime? = runtime()
         retiring?.setEnabled(true)
         retiring = nil
 
-        let replacement = InputRuntime()
+        let replacement = runtime()
         replacement.setEnabled(true)
         XCTAssertNotEqual(replacement.state, .active)
         replacement.setEnabled(false)
