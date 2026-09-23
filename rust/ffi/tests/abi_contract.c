@@ -28,6 +28,11 @@ int main(void) {
     pointer_input_decision_v1 output = {0};
     pointer_input_event_v1 event = line_event(0, 3);
 
+    assert(pointer_input_configuration_validate_v1(&reverse) == POINTER_INPUT_STATUS_SUCCESS_V1);
+    reverse.reserved = 1;
+    assert(pointer_input_configuration_validate_v1(&reverse) == POINTER_INPUT_STATUS_INVALID_ARGUMENT_V1);
+    reverse.reserved = 0;
+    assert(pointer_input_configuration_validate_v1(NULL) == POINTER_INPUT_STATUS_INVALID_ARGUMENT_V1);
     assert(pointer_input_engine_create_v1(&engine) == POINTER_INPUT_STATUS_SUCCESS_V1);
     assert(engine != NULL);
     void *owner = engine;

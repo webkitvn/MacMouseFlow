@@ -16,6 +16,23 @@ public enum InputDecision {
     case replace(horizontal: Int64, vertical: Int64)
 }
 
+public enum ScrollDirection: String, CaseIterable, Codable, Sendable {
+    case preserve
+    case reverse
+
+    fileprivate var abiValue: UInt32 { self == .preserve ? systemDirection : reverseDirection }
+}
+
+public func validate(direction: ScrollDirection) -> Bool {
+    var configuration = pointer_input_configuration_v1(
+        version: abiVersion,
+        size: UInt32(MemoryLayout<pointer_input_configuration_v1>.size),
+        direction: direction.abiValue,
+        reserved: 0
+    )
+    return pointer_input_configuration_validate_v1(&configuration) == successStatus
+}
+
 public final class PointerInputEngine {
     private var owner: UnsafeMutableRawPointer?
 
@@ -31,8 +48,17 @@ public final class PointerInputEngine {
 
     deinit { _ = pointer_input_engine_destroy_v1(&owner) }
 
-    public func setSystemDirection() -> Bool { setDirection(systemDirection) }
-    public func setReverseDirection() -> Bool { setDirection(reverseDirection) }
+    public func setSystemDirection() -> Bool { setDirection(.preserve) }
+    public func setReverseDirection() -> Bool { setDirection(.reverse) }
+    public func setDirection(_ direction: ScrollDirection) -> Bool {
+        var configuration = pointer_input_configuration_v1(
+            version: abiVersion,
+            size: UInt32(MemoryLayout<pointer_input_configuration_v1>.size),
+            direction: direction.abiValue,
+            reserved: 0
+        )
+        return pointer_input_engine_set_configuration_v1(owner, &configuration) == successStatus
+    }
 
     public func evaluate(horizontal: Int64, vertical: Int64) -> InputDecision? {
         var event = pointer_input_event_v1(
@@ -57,13 +83,4 @@ public final class PointerInputEngine {
         }
     }
 
-    private func setDirection(_ direction: UInt32) -> Bool {
-        var configuration = pointer_input_configuration_v1(
-            version: abiVersion,
-            size: UInt32(MemoryLayout<pointer_input_configuration_v1>.size),
-            direction: direction,
-            reserved: 0
-        )
-        return pointer_input_engine_set_configuration_v1(owner, &configuration) == successStatus
-    }
 }

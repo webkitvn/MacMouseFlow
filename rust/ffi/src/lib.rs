@@ -295,6 +295,31 @@ pub unsafe extern "C" fn pointer_input_engine_create_v1(
     }
 }
 
+/// Validates a configuration without an engine or state mutation.
+///
+/// # Safety
+/// `configuration` must point to a readable fixed-layout value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pointer_input_configuration_validate_v1(
+    configuration: *const PointerInputConfigurationV1,
+) -> PointerInputStatusV1 {
+    if configuration.is_null() {
+        return PointerInputStatusV1::InvalidArgument;
+    }
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: validated non-null pointer to a caller-owned POD value.
+        if configuration_from(unsafe { configuration.read() }).is_some() {
+            PointerInputStatusV1::Success
+        } else {
+            PointerInputStatusV1::InvalidArgument
+        }
+    })) {
+        Ok(status) => status,
+        Err(payload) => panic_status(payload),
+    }
+}
+
 /// Replaces the configuration observed by later evaluations.
 ///
 /// # Safety

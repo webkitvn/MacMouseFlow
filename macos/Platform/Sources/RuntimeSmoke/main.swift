@@ -3,7 +3,7 @@ import Platform
 
 let seconds: CFTimeInterval = 10
 
-guard let runtime = ScrollRuntime(reverseForHarness: true), runtime.start() else {
+guard let runtime = ScrollRuntime(direction: .reverse), runtime.start() else {
     fputs("Accessibility permission or CGEventTap startup unavailable\n", stderr)
     exit(1)
 }

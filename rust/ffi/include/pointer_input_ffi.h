@@ -67,6 +67,10 @@ typedef struct pointer_input_decision_v1 {
  */
 pointer_input_status_v1 pointer_input_engine_create_v1(void **out_engine);
 
+/* Validates a configuration without requiring or changing an engine. */
+pointer_input_status_v1 pointer_input_configuration_validate_v1(
+    const pointer_input_configuration_v1 *configuration);
+
 /* handle must refer to a live owner-retained allocation; configuration must have exact v1 layout. */
 pointer_input_status_v1 pointer_input_engine_set_configuration_v1(
     void *handle,
