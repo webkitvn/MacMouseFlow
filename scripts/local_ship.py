@@ -266,7 +266,7 @@ def _clear_pipeline_temp_state() -> CleanupResult:
 # Real runtime configuration is native-owned (ADR 0004) and outside this pipeline's
 # control; the pipeline only ever reads existence/length/hash, never contents.
 def config_path() -> Path:
-    return support_dir() / "configuration.json"
+    return home() / "Library" / "Application Support" / "MacMouseFlow" / "configuration.json"
 
 
 # Opaque sentinel used only when real configuration is absent, kept outside LocalShip/
