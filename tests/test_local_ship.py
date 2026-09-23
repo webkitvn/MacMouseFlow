@@ -87,6 +87,13 @@ class FakeHomeTestCase(unittest.TestCase):
 
 
 class ConfigEvidenceTests(FakeHomeTestCase):
+    def test_config_path_matches_runtime_configuration_store_path(self):
+        self.assertEqual(
+            local_ship.config_path(),
+            self.tmp_home / "Library" / "Application Support" / "MacMouseFlow" / "configuration.json",
+        )
+        self.assertNotIn(local_ship.BUNDLE_ID, local_ship.config_path().parts)
+
     def test_creates_opaque_sentinel_when_real_config_absent(self):
         evidence = local_ship.capture_config_evidence()
         self.assertTrue(evidence.is_sentinel)
@@ -101,9 +108,8 @@ class ConfigEvidenceTests(FakeHomeTestCase):
         self.assertNotIn("LocalShip", first.path)
 
     def test_real_config_evidence_used_when_present(self):
-        support = local_ship.support_dir()
-        support.mkdir(parents=True)
         real = local_ship.config_path()
+        real.parent.mkdir(parents=True)
         real.write_bytes(b"real-config-bytes")
         evidence = local_ship.capture_config_evidence()
         self.assertFalse(evidence.is_sentinel)
