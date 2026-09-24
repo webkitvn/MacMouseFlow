@@ -101,7 +101,7 @@ Prefer the fast path:
 
 Stop when the Issue acceptance criteria are met. Do not add compatibility work, abstractions, diagnostics, benchmarks, documentation, or tests that the Issue does not require.
 
-Use reference implementations to reduce rediscovery. Reuse ideas and observable behavior, not code expression. Do not copy or mechanically transform external code, comments, documentation, tests, distinctive naming, module structure, or control flow.
+Use reference implementations to reduce rediscovery. Reuse ideas and observable behavior, not code expression. Do not copy or mechanically transform external code, comments, documentation, tests, distinctive naming, module structure, or control flow. A routine reference comparison does not require a standalone artifact or tracker comment when it finds no material difference or blocker; record only findings that change implementation, acceptance, or later-agent context.
 
 Do not block implementation to prove speculative details.
 
@@ -153,7 +153,7 @@ just next
 
 Git hooks and GitHub Actions must call canonical commands instead of duplicating their logic.
 
-Use the smallest verification set that proves the active Issue's acceptance criteria.
+Use the smallest verification set that proves the active Issue's acceptance criteria. Do not split suites, add caches, or add path-specific verification complexity without measurement showing a repeated bottleneck worth fixing.
 
 Test through established public seams. If a test requires a new production interface, trait, protocol, adapter, provider, gateway, repository, mock, or fake solely for testability, stop TDD and resolve the boundary first.
 
