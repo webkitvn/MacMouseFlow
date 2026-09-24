@@ -11,10 +11,10 @@ Use sources by responsibility:
 - `CONTEXT.md`: canonical domain language.
 - `docs/adr/`: hard-to-reverse architecture decisions.
 - `docs/research/`: research evidence.
-- `docs/guardrails/`: active design guardrails.
+- `docs/guardrails/registry.yaml`: canonical entry point for active design guardrails.
 - Code, tests, and build files: implementation truth.
 
-Do not use chat history as project truth. If canonical sources conflict, report the drift in the active Issue and resolve only the material conflict before continuing.
+Do not treat chat history as project truth. If canonical sources conflict, report the drift in the active Issue and resolve only the material conflict before continuing.
 
 ## Tools
 
@@ -83,7 +83,13 @@ Work from an explicit GitHub Issue for planned work. Check its dependencies, acc
 
 Native GitHub milestone, parent/sub-issue, blocked-by/blocking, labels, assignees, and state are canonical when supported. Use Markdown/body relationship fallback only when native mutation is unavailable.
 
-Follow pointers to ADRs, research, and guardrails only when relevant to the active work.
+For direct canonical-domain lookup through GitHub, use:
+
+```bash
+gh api repos/OWNER/REPO/contents/CONTEXT.md -H 'Accept: application/vnd.github.raw+json'
+```
+
+Follow pointers to ADRs, research, and guardrails only when relevant to the active work. For guardrail-relevant work, start at `docs/guardrails/registry.yaml`.
 
 ## Delivery
 
