@@ -63,9 +63,13 @@ A zero-context agent must be able to answer from tracker/repository state alone:
 - Use domain terms from `CONTEXT.md`; do not invent competing vocabulary.
 - Do not introduce new process boundaries, helpers, IPC, HID takeover, or other hard-to-reverse architecture changes without a decision Issue and ADR.
 - Update the active Issue when a material fact or decision changes what later agents need to know.
-- External products and codebases are research inputs, not implementation or test oracles. Preserve the routing: reference observation → independent validation/project decision → established public seam → test/implementation. `/Users/cuongpham/Projects/repo-x` is an optional local research input only: if absent, continue without hunting for it; never use it as an implementation/test oracle or copy/mechanically transform its expression.
-- Do not copy or mechanically transform external code, comments, documentation prose, tests, distinctive naming, module structure, control flow, or product expression.
-- A reference-derived observation must not directly become an expected test value or architecture choice. If the expected behavior cannot be justified without the reference, research or decide first.
+- External products and codebases are reference implementations and research inputs. Use them to reduce rediscovery: identify the smallest known-good pattern, adapt it to this repository's established boundaries and domain language, then verify the observable behavior through an established seam or on the permitted reference Mac. `/Users/cuongpham/Projects/repo-x` is an optional local reference input only: if absent, continue without hunting for it.
+- Do not copy or mechanically transform external code, comments, documentation prose, tests, distinctive naming, module structure, control flow, or product expression. Reuse ideas and behavior, not expression.
+- Default delivery route for a precedent-backed change: reference observation → minimal adaptation → targeted verification → ship. Independent research, a new decision Issue, or a prototype is not required merely because the precedent came from an external codebase.
+- Do not block implementation to prove speculative implementation details. If uncertainty does not affect observable behavior, fail-open/safety guarantees, an established public boundary, or a hard-to-reverse decision, choose the simplest known-good pattern and continue.
+- Enter a deep-research/decision path only when at least one trigger is present: the solution depends on undocumented/private behavior; the reference conflicts with current repository contracts; the behavior fails on the permitted reference Mac; the change alters a hard-to-reverse architecture/public ABI/persistence contract; or existing public seams cannot bound a material fail-open, safety, or hot-path risk.
+- A reference-derived value or internal detail must not become a test oracle merely by being copied from the reference. Prefer an independently observable behavior, public documentation when needed, or a minimal local probe only for the specific deep-path uncertainty.
+- Timebox exploratory research for normal implementation work. If no deep-path trigger is found within 30 minutes, stop researching and implement the smallest vertical change supported by the best available precedent and current repository contracts.
 - When asking or consulting Oracle for second-model review, architecture feedback, or design validation, always use the dedicated ChatGPT project: `https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project` (e.g., passing `--chatgpt-url https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project` to Oracle). Treat responses as advisory and independently verify them against the codebase and tests.
 
 ## M0 + v0.1 architecture guardrails
@@ -80,6 +84,21 @@ Until superseded by a later decision:
 - Bridge or engine failure must fail open and preserve the original input.
 - Never infer physical `Device Identity` from `Scroll Granularity`, timestamps, or undocumented correlation.
 - v0.1 transforms `LineBased` scroll only; `PixelBased` scroll is preserved by default.
+
+## Delivery paths
+
+Use the fast path by default for a small or medium Issue with an established architecture and a known implementation precedent:
+
+1. Claim the Issue and read only its direct canonical pointers.
+2. Inspect the existing code plus the closest relevant reference pattern.
+3. Implement the smallest vertical change that produces the observable outcome.
+4. Run the smallest relevant public-seam test or canonical command.
+5. For native input behavior, smoke-test the observable result on the permitted reference Mac.
+6. Stop when the Issue acceptance is met. Do not add compatibility, abstractions, diagnostics, benchmarks, documentation, or tests that the Issue does not require.
+
+Use the deep path only when one of the deep-path triggers above is present. Wayfinder, prototype, domain-modeling, broad research, and additional architecture work are escalation tools, not mandatory ceremony for every Issue.
+
+For current pre-v1 work, the permitted Apple-silicon reference Mac is the primary product compatibility target unless the active Issue explicitly requires broader compatibility. Do not expand implementation or verification to Intel, universal binaries, extra macOS/Xcode matrices, or generic portability without an Issue requirement.
 
 ## Verification
 
