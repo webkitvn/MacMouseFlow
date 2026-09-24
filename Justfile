@@ -31,9 +31,12 @@ test:
 
 ci: check test build
 
+local-candidate:
+    python3 scripts/local_ship.py build
+
 local-build:
     just ci
-    python3 scripts/local_ship.py build
+    just local-candidate
 
 hooks-install:
     chmod +x .githooks/pre-commit .githooks/pre-push
