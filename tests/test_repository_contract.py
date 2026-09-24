@@ -51,6 +51,7 @@ class RepositoryContractTests(unittest.TestCase):
             "check:",
             "test:",
             "ci:",
+            "local-candidate:",
             "local-build:",
             "benchmark:",
             "smoke:",
@@ -66,6 +67,8 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("ci: check test build", justfile)
         self.assertIn("macos14-behavior:", justfile)
         self.assertIn("benchmark-ci:", justfile)
+        self.assertIn("local-candidate:\n    python3 scripts/local_ship.py build", justfile)
+        self.assertIn("local-build:\n    just ci\n    just local-candidate", justfile)
 
     def test_hooks_and_ci_route_through_canonical_commands(self):
         self.assertEqual(
@@ -86,15 +89,20 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("runs-on: macos-14", workflow)
         self.assertIn("just macos14-behavior", workflow)
         self.assertIn("just benchmark-ci", workflow)
-        self.assertIn("just local-build", workflow)
+        self.assertIn("just local-candidate", workflow)
+        self.assertNotIn("run: just local-build", workflow)
+        self.assertIn("changes:", workflow)
+        self.assertIn("README.md|docs/*.md", workflow)
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertNotIn("\n  push:\n", workflow)
         self.assertIn("local-ship-candidate:", workflow)
         self.assertIn("macos14-lifecycle:", workflow)
         self.assertIn("scripts/local_ship.py verify-transport", workflow)
         self.assertIn("scripts/local_ship.py verify-active", workflow)
         self.assertIn("rm -f \"$HOME/Library/Application Support/io.github.webkitvn.macmouseflow/LocalShip/lifecycle.json\"", workflow)
         self.assertIn("genuine controlled failed-update rollback", workflow)
-        self.assertIn("success:success:success:success", workflow)
-        self.assertIn("skipped:skipped:skipped:skipped", workflow)
+        self.assertIn("success:success:success:success:success", workflow)
+        self.assertIn("success:skipped:skipped:skipped:skipped", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertNotIn("cargo test", workflow)
         self.assertNotIn("cargo clippy", workflow)
