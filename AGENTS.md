@@ -4,82 +4,137 @@ Read this file before changing code, tests, build files, documentation, or plann
 
 ## Source of truth
 
-- `AGENTS.md`: stable repository-wide agent rules.
-- GitHub Issues: live project context, decisions, status, milestones, hierarchy, dependencies, release gates, and artifact pointers.
+Use sources by responsibility:
+
+- `AGENTS.md`: stable repository-wide workflow rules.
+- GitHub Issues: current work, decisions, milestones, hierarchy, dependencies, release gates, and artifact pointers.
 - `CONTEXT.md`: canonical domain language.
 - `docs/adr/`: hard-to-reverse architecture decisions.
 - `docs/research/`: research evidence.
-- `docs/guardrails/`: machine-discoverable design guardrails when present.
+- `docs/guardrails/registry.yaml`: canonical entry point for active design guardrails.
 - Code, tests, and build files: implementation truth.
 
-Do not treat chat history as project truth. If canonical sources conflict, report the drift in the active Issue and resolve it before continuing.
+Do not treat chat history as project truth. If canonical sources conflict, report the drift in the active Issue and resolve only the material conflict before continuing.
 
-## Cold start
+## Tools
 
-Use `gh` as the default project interface. Do not guess the active work from recent chat, branch names, or the oldest open Issue.
+Use the smallest tool that can resolve the current task.
 
-First locate the single open current context:
+- GitHub and `gh`: canonical interface for Issues, milestones, relationships, dependencies, claiming, and work status.
+- `just frontier`: show open, unblocked, unclaimed claimable work under the current context.
+- `just next`: select the highest-priority frontier Issue; never claims it.
+- `CONTEXT.md`: resolve canonical domain terminology.
+- ADRs: record hard-to-reverse or surprising architecture decisions.
+- Research: resolve material uncertainty that cannot be answered from current code, contracts, or reliable precedent.
+- Reference implementations: reduce rediscovery; adapt known-good behavior without copying external expression.
+- Wayfinder: planning escalation for large, vague, cross-cutting, or roadmap work; not routine implementation.
+- Domain modeling: use when domain semantics or boundaries are genuinely unclear.
+- Prototype: use for unresolved feasibility; prototypes are disposable evidence, not production foundations.
+- TDD, tests, and mocking: use established public seams; mock only established system boundaries. Do not invent production abstractions solely for testability.
+
+### Oracle
+
+Use Oracle only for material second-model review, architecture/design uncertainty, or an explicit review requirement. Treat its output as advisory and verify material conclusions against repository evidence and tests.
+
+Always use ChatGPT through the browser engine with manual login and the dedicated project. Do not let Oracle auto-select API mode.
+
+Canonical invocation:
 
 ```bash
-gh issue list -R OWNER/REPO \
-  --label work:current --state open \
-  --json number,title,labels,milestone,url
+oracle \
+  --engine browser \
+  --browser-manual-login \
+  --chatgpt-url "https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project" \
+  -p "<prompt>" \
+  --file "<relevant-file>"
 ```
 
-The result must contain exactly one Issue during normal work. During implementation/dogfood, that Issue must be an `execution:epic`; during planning it is the active planning context. `0` or more than `1` current contexts is an invariant failure: stop and report it rather than selecting work heuristically.
-
-When the repository commands are available, use:
+For first login or login recovery, keep the browser open:
 
 ```bash
+oracle \
+  --engine browser \
+  --browser-manual-login \
+  --browser-keep-browser \
+  --chatgpt-url "https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project" \
+  -p "Confirm the project session is available."
+```
+
+Oracle opens Chrome with its persistent manual-login profile. Log into ChatGPT manually in that window when required. Subsequent runs reuse that profile until the session expires.
+
+Do not switch to API mode, cookie-copy mode, another ChatGPT project, or a different browser-session strategy unless the active Issue explicitly requires it.
+
+## Start work
+
+Use `gh` as the default project interface.
+
+There must be exactly one open `work:current` context during normal work. During implementation or dogfood it must be the current execution context; during planning it is the current planning context. If none or multiple exist, stop and report the tracker inconsistency.
+
+Use:
+
+```text
 just frontier
 just next
 ```
 
-`frontier` means open + unblocked + unclaimed claimable leaf work under the sole current context. During execution, claimable leaves are `execution:task` descendants. Priority order is `priority:P0`, then `priority:P1`, then `priority:P2`; lower Issue number breaks ties. Missing/multiple priority labels are invalid metadata, not defaults. `just next` selects but never claims work.
+Claim the selected Issue by assigning it before changing repository artifacts.
 
-Claim a selected leaf by assigning it before changing repository artifacts.
+Work from an explicit GitHub Issue for planned work. Check its dependencies, acceptance criteria, declared target environment, and direct pointers before expanding context.
 
-For manual inspection or diagnosis:
+Native GitHub milestone, parent/sub-issue, blocked-by/blocking, labels, assignees, and state are canonical when supported. Use Markdown/body relationship fallback only when native mutation is unavailable.
+
+For direct canonical-domain lookup through GitHub, use:
 
 ```bash
-gh issue view ISSUE -R OWNER/REPO --comments \
-  --json number,title,body,state,stateReason,labels,milestone,parent,subIssues,blockedBy,blocking,assignees,comments,url
-
-gh api repos/OWNER/REPO/contents/CONTEXT.md \
-  -H 'Accept: application/vnd.github.raw+json'
+gh api repos/OWNER/REPO/contents/CONTEXT.md -H 'Accept: application/vnd.github.raw+json'
 ```
 
-Native GitHub milestone, hierarchy, dependency, label, assignee, and state metadata are canonical whenever the active tracker/dev environment exposes the required operations. A Markdown/body relationship graph is compatibility-only when native mutation is unavailable. If a current context declares such a fallback, surface that degraded tracker mode explicitly; do not silently compute a supposedly canonical frontier from an incomplete native graph.
+Follow pointers to ADRs, research, and guardrails only when relevant to the active work. For guardrail-relevant work, start at `docs/guardrails/registry.yaml`.
 
-Follow Issue pointers to ADRs, research, and guardrails only when needed. For guardrail-relevant work, start at `docs/guardrails/registry.yaml`, load active records matching the scope or triggers, then follow their canonical source pointers.
+## Delivery
 
-A zero-context agent must be able to answer from tracker/repository state alone: what is current, what work is available, what is blocked, what should be taken first, how to claim it, what canonical decisions constrain it, and how completion is proved.
+Keep changes small and vertical around an observable outcome.
 
-## Working rules
+Prefer the fast path:
 
-- Work from an explicit GitHub Issue for planned work.
-- Check dependencies before starting; claim an unassigned frontier Issue before working it.
-- Keep changes small and vertical around an observable outcome, not a technical layer.
-- Use domain terms from `CONTEXT.md`; do not invent competing vocabulary.
-- Do not introduce new process boundaries, helpers, IPC, HID takeover, or other hard-to-reverse architecture changes without a decision Issue and ADR.
-- Update the active Issue when a material fact or decision changes what later agents need to know.
-- External products and codebases are research inputs, not implementation or test oracles. Preserve the routing: reference observation → independent validation/project decision → established public seam → test/implementation. `/Users/cuongpham/Projects/repo-x` is an optional local research input only: if absent, continue without hunting for it; never use it as an implementation/test oracle or copy/mechanically transform its expression.
-- Do not copy or mechanically transform external code, comments, documentation prose, tests, distinctive naming, module structure, control flow, or product expression.
-- A reference-derived observation must not directly become an expected test value or architecture choice. If the expected behavior cannot be justified without the reference, research or decide first.
-- When asking or consulting Oracle for second-model review, architecture feedback, or design validation, always use the dedicated ChatGPT project: `https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project` (e.g., passing `--chatgpt-url https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project` to Oracle). Treat responses as advisory and independently verify them against the codebase and tests.
+`claim → inspect direct context and precedent → minimal adaptation → targeted verification → target-environment smoke when needed → ship`
 
-## M0 + v0.1 architecture guardrails
+Stop when the Issue acceptance criteria are met. Do not add compatibility work, abstractions, diagnostics, benchmarks, documentation, or tests that the Issue does not require.
 
-Until superseded by a later decision:
+Use reference implementations to reduce rediscovery. Reuse ideas and observable behavior, not code expression. Do not copy or mechanically transform external code, comments, documentation, tests, distinctive naming, module structure, or control flow.
 
-- One SwiftUI/AppKit process with a native input adapter and a platform-neutral Rust engine.
+Do not block implementation to prove speculative details.
+
+Enter the deep path only when uncertainty materially involves one or more of:
+
+- undocumented or private platform behavior;
+- conflict with an established repository contract;
+- failure in the active Issue's target environment;
+- a hard-to-reverse architecture, ABI, persistence, or process-boundary decision;
+- material fail-open, safety, correctness, or hot-path risk that existing seams cannot bound.
+
+Wayfinder, research, prototype, domain modeling, and additional architecture work are escalation tools, not mandatory ceremony.
+
+Timebox exploratory research for normal implementation work. If no deep-path trigger appears within 30 minutes, use the simplest reversible approach supported by current contracts and the best available precedent.
+
+Use the compatibility target declared by the active Issue. Do not expand support to additional architectures, OS versions, toolchains, or compatibility matrices without an explicit requirement or demonstrated production failure.
+
+Use domain terms from `CONTEXT.md`. Do not invent competing vocabulary.
+
+Update the active Issue only when a material fact or decision changes what later agents need to know.
+
+## Architecture guardrails
+
+These are stable defaults unless explicitly superseded by a newer Issue decision, ADR, or active guardrail.
+
+- Use one SwiftUI/AppKit process with a native input adapter and platform-neutral Rust engine.
 - Swift/AppKit owns macOS lifecycle, permissions, `CGEventTap`, native event extraction/application, and platform I/O outside the input callback.
 - Rust owns platform-neutral normalization, domain semantics, configuration evaluation, and `Input Decision`.
-- Swift ↔ Rust uses a narrow manual C ABI with fixed-layout values on the hot path.
-- The input callback must not perform UI/MainActor work, disk or network I/O, synchronous logging, config parsing, or unbounded blocking/locking.
-- Bridge or engine failure must fail open and preserve the original input.
+- Swift ↔ Rust uses a narrow manual C ABI with fixed-layout hot-path values.
+- The input callback must not perform UI/MainActor work, disk/network I/O, synchronous logging, config parsing, or unbounded blocking/locking.
+- Bridge or engine failure must fail open and preserve original input.
 - Never infer physical `Device Identity` from `Scroll Granularity`, timestamps, or undocumented correlation.
-- v0.1 transforms `LineBased` scroll only; `PixelBased` scroll is preserved by default.
+- Do not introduce new process boundaries, IPC, HID takeover, or similarly hard-to-reverse architecture without an explicit decision and ADR.
 
 ## Verification
 
@@ -96,21 +151,26 @@ just frontier
 just next
 ```
 
-Git hooks and GitHub Actions must call canonical commands instead of duplicating verification logic. Hooks are feedback gates, not final acceptance gates.
+Git hooks and GitHub Actions must call canonical commands instead of duplicating their logic.
 
-Establish the GitHub Actions workflow and observe its required status check passing before making that check mandatory in a repository ruleset/branch-protection policy. Required workflow behavior must not disappear for docs-only changes because of a top-level path filter.
+Use the smallest verification set that proves the active Issue's acceptance criteria.
 
-Test behavior through established public seams. If a test would require inventing a new interface/trait/protocol/adapter/provider/gateway/repository/mock/fake solely for testability, stop production TDD and resolve the boundary first. Mock or fake only at established system boundaries.
+Test through established public seams. If a test requires a new production interface, trait, protocol, adapter, provider, gateway, repository, mock, or fake solely for testability, stop TDD and resolve the boundary first.
 
-Strict latency evidence comes from the reference Mac, not hosted CI timing. Hot-path diagnostics must use bounded enqueue/buffering only; prefer dropping trace data over blocking input.
+Strict latency evidence must come from the target/reference environment declared by the active Issue, not unrelated hosted CI timing.
 
-## Wayfinder planning
+Hot-path diagnostics must use bounded enqueue/buffering; prefer dropping diagnostic data over blocking input.
 
-- During planning, discover the active context through `work:current`; the strategic Road-to-v1 map is not current execution work.
-- The `wayfinder:map` label identifies planning maps, but it is not the universal cold-start selector.
-- Decision details live in resolution comments, not duplicated in the map.
-- Milestones represent releases; labels represent work type; parent/sub-issue represents decomposition; blocked-by/blocking represents dependency.
-- Prefer native GitHub relationships over Markdown dependency lists; body fallback is compatibility-only when native mutation is unavailable.
-- Resolve at most one non-research Wayfinder ticket per planning session.
+## Planning
 
-Keep this file short and stable. Do not copy transient milestones, frontier state, dependency graphs, Issue numbers, or full decision bodies into it.
+Discover planning context through `work:current`. Strategic maps are not current execution work unless explicitly marked current.
+
+Milestones represent releases. Labels represent work type. Parent/sub-issue represents decomposition. Blocked-by/blocking represents dependencies.
+
+Prefer native GitHub relationships. Use body fallback only when the tracker cannot represent the relationship natively.
+
+Keep decision details in their resolution comments or canonical artifacts instead of duplicating them into planning maps.
+
+Resolve at most one non-research Wayfinder ticket per planning session.
+
+Keep this file short and stable. Store workflow invariants and tool routing here; keep release-specific scope, compatibility matrices, frontier state, dependency graphs, Issue numbers, and full decision bodies in their canonical locations.
