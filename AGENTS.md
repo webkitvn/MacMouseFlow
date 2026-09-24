@@ -63,18 +63,18 @@ A zero-context agent must be able to answer from tracker/repository state alone:
 - Use domain terms from `CONTEXT.md`; do not invent competing vocabulary.
 - Do not introduce new process boundaries, helpers, IPC, HID takeover, or other hard-to-reverse architecture changes without a decision Issue and ADR.
 - Update the active Issue when a material fact or decision changes what later agents need to know.
-- External products and codebases are reference implementations and research inputs. Use them to reduce rediscovery: identify the smallest known-good pattern, adapt it to this repository's established boundaries and domain language, then verify the observable behavior through an established seam or on the permitted reference Mac. `/Users/cuongpham/Projects/repo-x` is an optional local reference input only: if absent, continue without hunting for it.
+- External products and codebases are reference implementations and research inputs. Use them to reduce rediscovery: identify the smallest known-good pattern, adapt it to this repository's established boundaries and domain language, then verify the observable behavior through an established seam or in the active Issue's declared target environment. `/Users/cuongpham/Projects/repo-x` is an optional local reference input only: if absent, continue without hunting for it.
 - Do not copy or mechanically transform external code, comments, documentation prose, tests, distinctive naming, module structure, control flow, or product expression. Reuse ideas and behavior, not expression.
 - Default delivery route for a precedent-backed change: reference observation → minimal adaptation → targeted verification → ship. Independent research, a new decision Issue, or a prototype is not required merely because the precedent came from an external codebase.
 - Do not block implementation to prove speculative implementation details. If uncertainty does not affect observable behavior, fail-open/safety guarantees, an established public boundary, or a hard-to-reverse decision, choose the simplest known-good pattern and continue.
-- Enter a deep-research/decision path only when at least one trigger is present: the solution depends on undocumented/private behavior; the reference conflicts with current repository contracts; the behavior fails on the permitted reference Mac; the change alters a hard-to-reverse architecture/public ABI/persistence contract; or existing public seams cannot bound a material fail-open, safety, or hot-path risk.
+- Enter a deep-research/decision path only when at least one trigger is present: the solution depends on undocumented/private behavior; the reference conflicts with current repository contracts; the behavior fails in the active Issue's declared target environment; the change alters a hard-to-reverse architecture/public ABI/persistence contract; or existing public seams cannot bound a material fail-open, safety, or hot-path risk.
 - A reference-derived value or internal detail must not become a test oracle merely by being copied from the reference. Prefer an independently observable behavior, public documentation when needed, or a minimal local probe only for the specific deep-path uncertainty.
 - Timebox exploratory research for normal implementation work. If no deep-path trigger is found within 30 minutes, stop researching and implement the smallest vertical change supported by the best available precedent and current repository contracts.
 - When asking or consulting Oracle for second-model review, architecture feedback, or design validation, always use the dedicated ChatGPT project: `https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project` (e.g., passing `--chatgpt-url https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project` to Oracle). Treat responses as advisory and independently verify them against the codebase and tests.
 
-## M0 + v0.1 architecture guardrails
+## Architecture guardrails
 
-Until superseded by a later decision:
+These are stable repository defaults. If an active Issue, ADR, or guardrail explicitly supersedes one, follow the newer canonical decision:
 
 - One SwiftUI/AppKit process with a native input adapter and a platform-neutral Rust engine.
 - Swift/AppKit owns macOS lifecycle, permissions, `CGEventTap`, native event extraction/application, and platform I/O outside the input callback.
@@ -83,7 +83,6 @@ Until superseded by a later decision:
 - The input callback must not perform UI/MainActor work, disk or network I/O, synchronous logging, config parsing, or unbounded blocking/locking.
 - Bridge or engine failure must fail open and preserve the original input.
 - Never infer physical `Device Identity` from `Scroll Granularity`, timestamps, or undocumented correlation.
-- v0.1 transforms `LineBased` scroll only; `PixelBased` scroll is preserved by default.
 
 ## Delivery paths
 
@@ -93,12 +92,12 @@ Use the fast path by default for a small or medium Issue with an established arc
 2. Inspect the existing code plus the closest relevant reference pattern.
 3. Implement the smallest vertical change that produces the observable outcome.
 4. Run the smallest relevant public-seam test or canonical command.
-5. For native input behavior, smoke-test the observable result on the permitted reference Mac.
+5. For native input behavior, smoke-test the observable result in the active Issue's declared target environment.
 6. Stop when the Issue acceptance is met. Do not add compatibility, abstractions, diagnostics, benchmarks, documentation, or tests that the Issue does not require.
 
 Use the deep path only when one of the deep-path triggers above is present. Wayfinder, prototype, domain-modeling, broad research, and additional architecture work are escalation tools, not mandatory ceremony for every Issue.
 
-For current pre-v1 work, the permitted Apple-silicon reference Mac is the primary product compatibility target unless the active Issue explicitly requires broader compatibility. Do not expand implementation or verification to Intel, universal binaries, extra macOS/Xcode matrices, or generic portability without an Issue requirement.
+Use the compatibility target declared by the active Issue. Do not expand implementation or verification beyond that target unless an explicit Issue requires broader compatibility or a demonstrated production failure makes it necessary.
 
 ## Verification
 
@@ -121,15 +120,15 @@ Establish the GitHub Actions workflow and observe its required status check pass
 
 Test behavior through established public seams. If a test would require inventing a new interface/trait/protocol/adapter/provider/gateway/repository/mock/fake solely for testability, stop production TDD and resolve the boundary first. Mock or fake only at established system boundaries.
 
-Strict latency evidence comes from the reference Mac, not hosted CI timing. Hot-path diagnostics must use bounded enqueue/buffering only; prefer dropping trace data over blocking input.
+Strict latency evidence comes from the target/reference environment declared by the active Issue, not from unrelated hosted CI timing. Hot-path diagnostics must use bounded enqueue/buffering only; prefer dropping trace data over blocking input.
 
 ## Wayfinder planning
 
-- During planning, discover the active context through `work:current`; the strategic Road-to-v1 map is not current execution work.
+- During planning, discover the active context through `work:current`; strategic maps are not current execution work unless the tracker explicitly marks them as current.
 - The `wayfinder:map` label identifies planning maps, but it is not the universal cold-start selector.
 - Decision details live in resolution comments, not duplicated in the map.
 - Milestones represent releases; labels represent work type; parent/sub-issue represents decomposition; blocked-by/blocking represents dependency.
 - Prefer native GitHub relationships over Markdown dependency lists; body fallback is compatibility-only when native mutation is unavailable.
 - Resolve at most one non-research Wayfinder ticket per planning session.
 
-Keep this file short and stable. Do not copy transient milestones, frontier state, dependency graphs, Issue numbers, or full decision bodies into it.
+Keep this file short and stable. Store workflow invariants here; keep transient milestones, release-specific scope, compatibility matrices, frontier state, dependency graphs, Issue numbers, and full decision bodies in GitHub Issues, ADRs, or guardrails instead.
