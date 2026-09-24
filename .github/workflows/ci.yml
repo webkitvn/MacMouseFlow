@@ -4,8 +4,6 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -16,8 +14,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_full: ${{ steps.classify.outputs.run_full }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Select verification scope
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run_full=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "run_full=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          run_full=false
+          for path in "${changed[@]}"; do
+            echo "changed: $path"
+            case "$path" in
+              README.md|docs/*.md)
+                ;;
+              *)
+                run_full=true
+                break
+                ;;
+            esac
+          done
+
+          echo "run_full=$run_full" >> "$GITHUB_OUTPUT"
+
   verify:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: [changes]
+    if: needs.changes.outputs.run_full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v6
@@ -27,7 +70,8 @@ jobs:
         run: just ci
 
   macos14-behavior:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: [changes]
+    if: needs.changes.outputs.run_full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v6
@@ -43,9 +87,9 @@ jobs:
     # hosted stand-in for the macOS 26.6.2 reference Mac) and packages it, unmodified,
     # for transport to the macos-14 lifecycle-compatibility job below. This job never
     # runs on macos-14 and the macos-14 job below never rebuilds from source.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: needs.changes.outputs.run_full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: macos-26
-    needs: [verify]
+    needs: [changes, verify]
     outputs:
       sha256: ${{ steps.package.outputs.sha256 }}
     steps:
@@ -53,9 +97,9 @@ jobs:
       - name: Install command router
         run: brew install just
       - name: Build local-ship candidate
-        run: just local-build
+        run: just local-candidate
       - name: Verify candidate architecture is thin arm64 (ADR-0006)
-        # `just local-build` already asserts this internally before signing
+        # `just local-candidate` already asserts this internally before signing
         # (scripts/local_ship.py: assert_thin_arm64_executable); this step makes that
         # assertion explicit and independently visible in this hosted macos-26 row's
         # own CI log, rather than relying on the macos-26 runner label as an implicit
@@ -154,15 +198,15 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [verify, macos14-behavior, local-ship-candidate, macos14-lifecycle]
+    needs: [changes, verify, macos14-behavior, local-ship-candidate, macos14-lifecycle]
     runs-on: ubuntu-latest
     steps:
       - name: Require verification success or intentional draft skip
         shell: bash
         run: |
-          results="${{ needs.verify.result }}:${{ needs.macos14-behavior.result }}:${{ needs.local-ship-candidate.result }}:${{ needs.macos14-lifecycle.result }}"
+          results="${{ needs.changes.result }}:${{ needs.verify.result }}:${{ needs.macos14-behavior.result }}:${{ needs.local-ship-candidate.result }}:${{ needs.macos14-lifecycle.result }}"
           case "$results" in
-            success:success:success:success) exit 0 ;;
-            skipped:skipped:skipped:skipped) exit 0 ;;
+            success:success:success:success:success) exit 0 ;;
+            success:skipped:skipped:skipped:skipped) exit 0 ;;
             *) exit 1 ;;
           esac
