@@ -62,6 +62,8 @@ oracle \
 
 Oracle opens Chrome with its persistent manual-login profile. Log into ChatGPT manually in that window when required. Subsequent runs reuse that profile until the session expires.
 
+For a fresh consultation, attach Oracle to a tab verified at the dedicated Project root (`/project`) with the `New chat in Mac Mouse Flow` composer visible; submitting there creates a new Project conversation. Do not rely on `--chatgpt-url` alone to establish fresh-conversation state. To continue one conversation, attach Oracle to its exact `https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/c/<conversation-id>` URL.
+
 Do not switch to API mode, cookie-copy mode, another ChatGPT project, or a different browser-session strategy unless the active Issue explicitly requires it.
 
 ## Start work
