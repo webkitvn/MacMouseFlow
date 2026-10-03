@@ -494,6 +494,36 @@ class GuardedLaunchProbeTests(FakeHomeTestCase):
         executable = bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
         self.assertEqual(local_ship.guarded_launch_probe(executable), local_ship.launch_probe(executable))
 
+    def test_guarded_probe_isolates_child_configuration_and_cleans_home(self):
+        source = local_ship.config_path()
+        source.parent.mkdir(parents=True)
+        v1 = b'{"schema_version":1,"scroll":{"enabled":false,"line_direction":"reverse"}}'
+        source.write_bytes(v1)
+        environment = dict(os.environ)
+        for fails in [False, True]:
+            report = self.tmp_home / "child-home.txt"
+            executable = self.tmp_home / "configuration-writer"
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import os, pathlib, time\n"
+                "home = pathlib.Path(os.environ['HOME'])\n"
+                "assert str(home) == os.environ['CFFIXED_USER_HOME']\n"
+                f"assert home != pathlib.Path({str(self.tmp_home)!r})\n"
+                "config = home / 'Library/Application Support/MacMouseFlow/configuration.json'\n"
+                "assert not config.exists()\n"
+                "config.parent.mkdir(parents=True)\n"
+                f"config.write_bytes({v1!r})\n"
+                "config.write_text('{\"schema_version\":2}')\n"
+                f"pathlib.Path({str(report)!r}).write_text(str(home))\n"
+                + ("raise SystemExit(7)\n" if fails else "time.sleep(10)\n")
+            )
+            executable.chmod(0o755)
+            result = local_ship.guarded_launch_probe(executable)
+            self.assertEqual(result.ok, not fails, result.reason)
+            self.assertEqual(source.read_bytes(), v1)
+            self.assertFalse(pathlib.Path(report.read_text()).exists())
+            self.assertEqual(dict(os.environ), environment)
+
     def test_guarded_probe_hard_stops_if_config_evidence_changes_during_probe(self):
         bundle = make_bundle(self.tmp_home, exit_code=0)
         executable = bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME

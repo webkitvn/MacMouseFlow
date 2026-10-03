@@ -74,6 +74,7 @@ final class ConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(runtime.configurationAttention, .saveFailed)
         XCTAssertNotEqual(runtime.state, .active)
         XCTAssertFalse(runtime.canEditConfiguration)
+        XCTAssertTrue(runtime.migrationFailed)
         XCTAssertEqual(try Data(contentsOf: store.url), source)
 
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
@@ -91,6 +92,7 @@ final class ConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(restarted.configuration, .init(enabled: true, direction: .reverse, amountPercent: 100))
         XCTAssertEqual(restarted.configurationAttention, .none)
         XCTAssertTrue(restarted.canEditConfiguration)
+        XCTAssertFalse(restarted.migrationFailed)
     }
 
     func testUnreadableConfigurationDefaultsWithAttentionWithoutRewrite() throws {

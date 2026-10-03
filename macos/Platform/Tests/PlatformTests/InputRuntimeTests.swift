@@ -73,6 +73,7 @@ final class InputRuntimeTests: XCTestCase {
         XCTAssertNotEqual(runtime.state, .off)
         XCTAssertNotEqual(runtime.state, .configurationNeedsAttention)
         XCTAssertTrue(runtime.canEditConfiguration)
+        XCTAssertFalse(runtime.migrationFailed)
 
         try FileManager.default.removeItem(at: store.url)
         XCTAssertTrue(store.persist(committed))

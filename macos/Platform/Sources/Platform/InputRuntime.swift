@@ -24,7 +24,7 @@ public final class InputRuntime: ObservableObject {
     @Published public private(set) var isSaving = false
 
     private let store: ConfigurationStore
-    private let migrationFailed: Bool
+    public let migrationFailed: Bool
     private let lifecycle = LifecycleExecutor()
     private var accessibilityTrusted = false
     private var runtimeStatus: ScrollRuntimeStatus = .unavailable
