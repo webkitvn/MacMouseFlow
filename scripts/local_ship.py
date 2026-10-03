@@ -584,7 +584,7 @@ def _remove_probe_log() -> None:
         pass
 
 
-def launch_probe(executable: Path) -> BundleValidation:
+def launch_probe(executable: Path, env: Optional[dict] = None) -> BundleValidation:
     """Start the installed executable and confirm it remains healthy briefly.
 
     Startup stdout/stderr are captured through one combined pipe that a drain thread
@@ -598,7 +598,7 @@ def launch_probe(executable: Path) -> BundleValidation:
     likewise reported as a structured failure rather than an exception.
     """
     try:
-        process = subprocess.Popen([str(executable)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process = subprocess.Popen([str(executable)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     except OSError as exc:
         return BundleValidation(False, f"dynamic-loader/exec failure: {exc}")
 
@@ -659,13 +659,18 @@ def launch_probe(executable: Path) -> BundleValidation:
 
 
 def guarded_launch_probe(executable: Path) -> BundleValidation:
-    """Capture runtime-configuration evidence immediately before and after every
+    """Launch with a disposable home, then verify user configuration is unchanged.
+
+    Capture runtime-configuration evidence before and after every
     candidate launch probe and verify it is unchanged before any caller acts on the
     probe result with a filesystem mutation. A probe that leaves an observable trace
     on runtime configuration is an integrity violation, not an expected failure mode,
     so it hard-stops rather than returning a structured result."""
     before = capture_config_evidence()
-    result = launch_probe(executable)
+    with tempfile.TemporaryDirectory(prefix="mmf-launch-home-") as probe_home:
+        # Foundation uses CFFIXED_USER_HOME; HOME also isolates non-Foundation I/O.
+        env = dict(os.environ, HOME=probe_home, CFFIXED_USER_HOME=probe_home)
+        result = launch_probe(executable, env=env)
     after = capture_config_evidence()
     assert_config_unchanged(before, after)
     return result

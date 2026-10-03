@@ -24,6 +24,7 @@ public final class InputRuntime: ObservableObject {
     @Published public private(set) var isSaving = false
 
     private let store: ConfigurationStore
+    public let migrationFailed: Bool
     private let lifecycle = LifecycleExecutor()
     private var accessibilityTrusted = false
     private var runtimeStatus: ScrollRuntimeStatus = .unavailable
@@ -32,7 +33,9 @@ public final class InputRuntime: ObservableObject {
 
     public init(store: ConfigurationStore = ConfigurationStore()) {
         self.store = store
-        (configuration, configurationAttention) = store.load()
+        let loaded = store.load()
+        (configuration, configurationAttention) = loaded
+        migrationFailed = loaded.1 == .saveFailed
         lifecycle.onStatus = { [weak self] status in
             guard let self else { return }
             self.runtimeStatus = status
@@ -42,13 +45,13 @@ public final class InputRuntime: ObservableObject {
     }
 
     public var hasAccessibilityAccess: Bool { AXIsProcessTrusted() }
-    public var canEditConfiguration: Bool { (configurationAttention == .none || configurationAttention == .saveFailed) && !isSaving }
+    public var canEditConfiguration: Bool { !migrationFailed && (configurationAttention == .none || configurationAttention == .saveFailed) && !isSaving }
 
-    public func setEnabled(_ enabled: Bool) { commit(.init(enabled: enabled, direction: configuration.direction)) }
-    public func setDirection(_ direction: ScrollDirection) { commit(.init(enabled: configuration.enabled, direction: direction)) }
+    public func setEnabled(_ enabled: Bool) { commit(.init(enabled: enabled, direction: configuration.direction, amountPercent: configuration.amountPercent)) }
+    public func setDirection(_ direction: ScrollDirection) { commit(.init(enabled: configuration.enabled, direction: direction, amountPercent: configuration.amountPercent)) }
 
     public func resetMalformedConfiguration() {
-        guard configurationAttention == .malformed || configurationAttention == .saveFailed else { return }
+        guard !migrationFailed, configurationAttention == .malformed || configurationAttention == .saveFailed else { return }
         guard store.persist(.default) else {
             configurationAttention = .saveFailed
             publishState()
@@ -75,7 +78,7 @@ public final class InputRuntime: ObservableObject {
 
     private func commit(_ candidate: PersistedConfiguration) {
         guard canEditConfiguration, candidate != configuration else { return }
-        guard validate(direction: candidate.direction), store.persist(candidate) else {
+        guard validate(direction: candidate.direction, amountPercent: candidate.amountPercent), store.persist(candidate) else {
             configurationAttention = .saveFailed
             publishState()
             return
@@ -98,7 +101,7 @@ public final class InputRuntime: ObservableObject {
             self.monitor = nil
         }
         publishState()
-        lifecycle.request(enabled: configuration.enabled && canRun, trusted: accessibilityTrusted, direction: configuration.direction, revision: revision)
+        lifecycle.request(enabled: configuration.enabled && canRun, trusted: accessibilityTrusted, direction: configuration.direction, amountPercent: configuration.amountPercent, revision: revision)
     }
 
     private func publishState() {
@@ -111,12 +114,13 @@ private final class LifecycleExecutor: @unchecked Sendable {
         var enabled: Bool
         var trusted: Bool
         var direction: ScrollDirection
+        var amountPercent: UInt32
         var revision: UInt64
     }
 
     private let queue = DispatchQueue(label: "io.github.webkitvn.macmouseflow.lifecycle")
     private let lock = NSLock()
-    private var intent = Intent(enabled: false, trusted: false, direction: .preserve, revision: 0)
+    private var intent = Intent(enabled: false, trusted: false, direction: .preserve, amountPercent: 100, revision: 0)
     private var pending = false
     private var draining = false
     private var shutdownRequested = false
@@ -128,10 +132,10 @@ private final class LifecycleExecutor: @unchecked Sendable {
     private var startFailures = 0
     private var nextStartAllowed = DispatchTime.now()
 
-    func request(enabled: Bool, trusted: Bool, direction: ScrollDirection, revision: UInt64) {
+    func request(enabled: Bool, trusted: Bool, direction: ScrollDirection, amountPercent: UInt32, revision: UInt64) {
         lock.lock()
         guard !shutdownRequested else { lock.unlock(); return }
-        intent = Intent(enabled: enabled, trusted: trusted, direction: direction, revision: revision)
+        intent = Intent(enabled: enabled, trusted: trusted, direction: direction, amountPercent: amountPercent, revision: revision)
         pending = true
         guard !draining else { lock.unlock(); return }
         draining = true
@@ -197,7 +201,7 @@ private final class LifecycleExecutor: @unchecked Sendable {
             return
         }
         guard DispatchTime.now() >= nextStartAllowed else { publish(.unavailable); return }
-        guard let candidate = ScrollRuntime(direction: desired.direction), candidate.start() else {
+        guard let candidate = ScrollRuntime(direction: desired.direction, amountPercent: desired.amountPercent), candidate.start() else {
             registerStartFailure()
             publish(.unavailable)
             return
@@ -209,7 +213,7 @@ private final class LifecycleExecutor: @unchecked Sendable {
             publish(.unavailable)
             return
         }
-        guard latest.revision == desired.revision, latest.direction == desired.direction else {
+        guard latest.revision == desired.revision, latest.direction == desired.direction, latest.amountPercent == desired.amountPercent else {
             candidate.stop()
             return reconcile()
         }

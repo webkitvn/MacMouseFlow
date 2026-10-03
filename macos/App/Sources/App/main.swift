@@ -152,6 +152,8 @@ private struct ScrollingPane: View {
                     Button("Reset Configuration") { runtime.resetMalformedConfiguration() }
                 } else if runtime.configurationAttention == .newerSchema {
                     Text("This configuration was created by a newer version. It is read-only and has not been changed.")
+                } else if runtime.migrationFailed {
+                    Text("Your saved settings could not be updated. Scrolling changes are off and your saved settings are unchanged. Quit and reopen MacMouseFlow to try again.")
                 } else if runtime.configurationAttention == .saveFailed {
                     Text("Your changes could not be saved. Your previous settings are still in use.")
                 }
