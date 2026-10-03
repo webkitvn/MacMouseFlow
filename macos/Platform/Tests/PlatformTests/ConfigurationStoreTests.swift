@@ -85,5 +85,9 @@ final class ConfigurationStoreTests: XCTestCase {
     func testBridgeValidationAcceptsBothDirections() {
         XCTAssertTrue(validate(direction: .preserve))
         XCTAssertTrue(validate(direction: .reverse))
+        XCTAssertTrue(validate(direction: .preserve, amountPercent: 25))
+        XCTAssertTrue(validate(direction: .reverse, amountPercent: 400))
+        XCTAssertFalse(validate(direction: .preserve, amountPercent: 24))
+        XCTAssertFalse(validate(direction: .reverse, amountPercent: 401))
     }
 }

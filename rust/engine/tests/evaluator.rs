@@ -1,6 +1,6 @@
 use pointer_input_engine::{
-    EvaluationStatus, InputDecision, InputEvent, InputSource, ScrollConfiguration, ScrollEvent,
-    ScrollGranularity, SourceClass,
+    EvaluationStatus, InputDecision, InputEvent, InputSource, LineBasedReplacement,
+    ScrollConfiguration, ScrollEvent, ScrollGranularity, SourceClass,
 };
 
 fn line_event(horizontal_lines: i64, vertical_lines: i64, source_class: SourceClass) -> InputEvent {
@@ -22,24 +22,16 @@ fn reverse_accepts_unknown_source_without_changing_behavior() {
     assert_eq!(unknown.status, mouse.status);
     assert_eq!(
         unknown.decision,
-        InputDecision::Replace(ScrollEvent {
-            source: InputSource {
-                source_class: SourceClass::Unknown,
-            },
-            granularity: ScrollGranularity::LineBased,
-            horizontal_lines: 0,
-            vertical_lines: -3,
+        InputDecision::Replace(LineBasedReplacement {
+            horizontal_hundredths: 0,
+            vertical_hundredths: -3 * 100,
         })
     );
     assert_eq!(
         mouse.decision,
-        InputDecision::Replace(ScrollEvent {
-            source: InputSource {
-                source_class: SourceClass::Mouse,
-            },
-            granularity: ScrollGranularity::LineBased,
-            horizontal_lines: 0,
-            vertical_lines: -3,
+        InputDecision::Replace(LineBasedReplacement {
+            horizontal_hundredths: 0,
+            vertical_hundredths: -3 * 100,
         })
     );
 }
@@ -64,13 +56,9 @@ fn reverse_replaces_one_axis_line_scroll() {
 
     assert_eq!(
         result,
-        pointer_input_engine::Evaluation::success(InputDecision::Replace(ScrollEvent {
-            source: InputSource {
-                source_class: SourceClass::Unknown,
-            },
-            granularity: ScrollGranularity::LineBased,
-            horizontal_lines: 0,
-            vertical_lines: -3,
+        pointer_input_engine::Evaluation::success(InputDecision::Replace(LineBasedReplacement {
+            horizontal_hundredths: 0,
+            vertical_hundredths: -3 * 100,
         }))
     );
 }
@@ -113,13 +101,9 @@ fn reverse_negates_literal_two_axis_line_scroll_cases() {
         assert_eq!(result.status, EvaluationStatus::Success);
         assert_eq!(
             result.decision,
-            InputDecision::Replace(ScrollEvent {
-                source: InputSource {
-                    source_class: SourceClass::Unknown,
-                },
-                granularity: ScrollGranularity::LineBased,
-                horizontal_lines: expected_horizontal,
-                vertical_lines: expected_vertical,
+            InputDecision::Replace(LineBasedReplacement {
+                horizontal_hundredths: expected_horizontal * 100,
+                vertical_hundredths: expected_vertical * 100,
             })
         );
     }
@@ -143,4 +127,77 @@ fn pixel_scroll_preserves_under_reverse_configuration() {
         result,
         pointer_input_engine::Evaluation::success(InputDecision::Preserve)
     );
+}
+
+#[test]
+fn amount_is_exact_stateless_and_orthogonal_to_direction() {
+    for (configuration, amount, expected) in [
+        (ScrollConfiguration::system(), 25, 25),
+        (ScrollConfiguration::system(), 50, 50),
+        (ScrollConfiguration::system(), 137, 137),
+        (ScrollConfiguration::system(), 400, 400),
+        (ScrollConfiguration::reverse(), 100, -100),
+        (ScrollConfiguration::reverse(), 50, -50),
+    ] {
+        let engine = pointer_input_engine::Engine::new(configuration.with_amount(amount).unwrap());
+        for _ in 0..2 {
+            assert_eq!(
+                engine.evaluate(line_event(1, -1, SourceClass::Unknown)),
+                pointer_input_engine::Evaluation::success(InputDecision::Replace(
+                    LineBasedReplacement {
+                        horizontal_hundredths: expected,
+                        vertical_hundredths: -expected,
+                    }
+                ))
+            );
+        }
+        assert_eq!(
+            engine
+                .evaluate(line_event(0, 0, SourceClass::Unknown))
+                .decision,
+            InputDecision::Preserve
+        );
+    }
+    assert!(ScrollConfiguration::system().with_amount(24).is_none());
+    assert!(ScrollConfiguration::reverse().with_amount(401).is_none());
+}
+
+#[test]
+fn multiplication_and_negation_overflow_preserve_the_whole_event() {
+    for (configuration, amount, horizontal, vertical) in [
+        (ScrollConfiguration::system(), 400, 1, i64::MAX),
+        (ScrollConfiguration::system(), 25, i64::MIN, 1),
+        (ScrollConfiguration::reverse(), 256, i64::MIN / 256, 1),
+    ] {
+        let engine = pointer_input_engine::Engine::new(configuration.with_amount(amount).unwrap());
+        let result = engine.evaluate(line_event(horizontal, vertical, SourceClass::Unknown));
+        assert_eq!(result.status, EvaluationStatus::EvaluationFailed);
+        assert_eq!(result.decision, InputDecision::Preserve);
+    }
+}
+
+#[test]
+fn direction_and_amount_are_one_atomic_snapshot() {
+    use std::sync::Arc;
+    let system = ScrollConfiguration::system().with_amount(25).unwrap();
+    let reverse = ScrollConfiguration::reverse().with_amount(137).unwrap();
+    let engine = Arc::new(pointer_input_engine::Engine::new(system));
+    let writer = Arc::clone(&engine);
+    let thread = std::thread::spawn(move || {
+        for _ in 0..10_000 {
+            writer.set_configuration(reverse);
+            writer.set_configuration(system);
+        }
+    });
+    for _ in 0..10_000 {
+        let InputDecision::Replace(value) = engine
+            .evaluate(line_event(1, 1, SourceClass::Unknown))
+            .decision
+        else {
+            panic!("expected replacement")
+        };
+        assert!(value.horizontal_hundredths == 25 || value.horizontal_hundredths == -137);
+        assert_eq!(value.horizontal_hundredths, value.vertical_hundredths);
+    }
+    thread.join().unwrap();
 }

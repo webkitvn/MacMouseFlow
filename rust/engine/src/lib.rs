@@ -55,6 +55,7 @@ pub enum ScrollGranularity {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScrollConfiguration {
     direction: ScrollDirection,
+    amount_percent: u32,
 }
 
 impl ScrollConfiguration {
@@ -63,6 +64,7 @@ impl ScrollConfiguration {
     pub const fn system() -> Self {
         Self {
             direction: ScrollDirection::System,
+            amount_percent: 100,
         }
     }
 
@@ -71,7 +73,24 @@ impl ScrollConfiguration {
     pub const fn reverse() -> Self {
         Self {
             direction: ScrollDirection::Reverse,
+            amount_percent: 100,
         }
+    }
+
+    /// Selects an exact integer Scroll Amount, rejecting values outside 25...400.
+    #[must_use]
+    pub const fn with_amount(self, amount_percent: u32) -> Option<Self> {
+        if amount_percent < 25 || amount_percent > 400 {
+            return None;
+        }
+        Some(Self {
+            amount_percent,
+            ..self
+        })
+    }
+
+    const fn snapshot(self) -> u32 {
+        (self.amount_percent << 1) | self.direction as u32
     }
 }
 
@@ -86,8 +105,17 @@ enum ScrollDirection {
 pub enum InputDecision {
     /// Leave the native observation unchanged.
     Preserve,
-    /// Replace it with the normalized scroll observation.
-    Replace(ScrollEvent),
+    /// Replace line-based movement with exact hundredths-of-a-line.
+    Replace(LineBasedReplacement),
+}
+
+/// Exact replacement movement; 100 hundredths equals one line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LineBasedReplacement {
+    /// Horizontal movement in hundredths-of-a-line.
+    pub horizontal_hundredths: i64,
+    /// Vertical movement in hundredths-of-a-line.
+    pub vertical_hundredths: i64,
 }
 
 /// An evaluation status independent of the decision.
@@ -128,7 +156,7 @@ impl Evaluation {
 
 /// Evaluates platform-neutral input against an atomic configuration snapshot.
 pub struct Engine {
-    direction: AtomicU32,
+    configuration: AtomicU32,
 }
 
 impl Engine {
@@ -136,14 +164,14 @@ impl Engine {
     #[must_use]
     pub fn new(configuration: ScrollConfiguration) -> Self {
         Self {
-            direction: AtomicU32::new(configuration.direction as u32),
+            configuration: AtomicU32::new(configuration.snapshot()),
         }
     }
 
     /// Replaces the configuration observed by later evaluations.
     pub fn set_configuration(&self, configuration: ScrollConfiguration) {
-        self.direction
-            .store(configuration.direction as u32, Ordering::Release);
+        self.configuration
+            .store(configuration.snapshot(), Ordering::Release);
     }
 
     /// Evaluates one normalized input observation.
@@ -155,24 +183,34 @@ impl Engine {
     }
 
     fn evaluate_scroll(&self, scroll: ScrollEvent) -> Evaluation {
+        let snapshot = self.configuration.load(Ordering::Acquire);
+        let amount = i64::from(snapshot >> 1);
+        let reverse = snapshot & 1 == ScrollDirection::Reverse as u32;
         if scroll.granularity == ScrollGranularity::PixelBased
-            || self.direction.load(Ordering::Acquire) == ScrollDirection::System as u32
+            || (!reverse && amount == 100)
             || (scroll.horizontal_lines == 0 && scroll.vertical_lines == 0)
         {
             return Evaluation::success(InputDecision::Preserve);
         }
 
-        let Some(horizontal_lines) = scroll.horizontal_lines.checked_neg() else {
+        let scale = |lines: i64| {
+            let hundredths = lines.checked_mul(amount)?;
+            if reverse {
+                hundredths.checked_neg()
+            } else {
+                Some(hundredths)
+            }
+        };
+        let Some(horizontal_hundredths) = scale(scroll.horizontal_lines) else {
             return Evaluation::failed();
         };
-        let Some(vertical_lines) = scroll.vertical_lines.checked_neg() else {
+        let Some(vertical_hundredths) = scale(scroll.vertical_lines) else {
             return Evaluation::failed();
         };
 
-        Evaluation::success(InputDecision::Replace(ScrollEvent {
-            horizontal_lines,
-            vertical_lines,
-            ..scroll
+        Evaluation::success(InputDecision::Replace(LineBasedReplacement {
+            horizontal_hundredths,
+            vertical_hundredths,
         }))
     }
 }
