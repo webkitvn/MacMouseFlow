@@ -5,6 +5,21 @@ import CoreGraphics
 import XCTest
 
 final class ScrollRuntimeTests: XCTestCase {
+    func testLoadedV2AmountReachesRustAndNativeAdapter() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConfigurationStore(directory: directory)
+        XCTAssertTrue(store.persist(.init(enabled: true, direction: .reverse, amountPercent: 137)))
+        let (configuration, attention) = store.load()
+        XCTAssertEqual(attention, .none)
+        let engine = try XCTUnwrap(PointerInputEngine())
+        XCTAssertTrue(engine.setDirection(configuration.direction, amountPercent: configuration.amountPercent))
+        let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: 100, wheel2: -100, wheel3: 0))
+        XCTAssertEqual(ScrollAdapter.process(event, engine: engine), 1)
+        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventDeltaAxis1), -137)
+        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventDeltaAxis2), 137)
+    }
+
     func testExactAmountThroughBridgeAndNativeFields() throws {
         let engine = try XCTUnwrap(PointerInputEngine())
         for (direction, amount, expected) in [(ScrollDirection.preserve, UInt32(25), Int64(25)), (.preserve, 50, 50), (.preserve, 137, 137), (.reverse, 100, -100), (.reverse, 50, -50)] {

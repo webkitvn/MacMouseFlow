@@ -21,11 +21,76 @@ final class ConfigurationStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.url.path))
     }
 
-    func testV1ConfigurationPersistsAcrossRestart() {
+    func testV2ConfigurationPersistsAcrossRestart() throws {
         let store = ConfigurationStore(directory: directory)
-        let expected = PersistedConfiguration(enabled: true, direction: .reverse)
-        XCTAssertTrue(store.persist(expected))
-        XCTAssertEqual(ConfigurationStore(directory: directory).load().0, expected)
+        for amount: UInt32 in [25, 100, 137, 400] {
+            let expected = PersistedConfiguration(enabled: true, direction: .reverse, amountPercent: amount)
+            XCTAssertTrue(store.persist(expected))
+            let loaded = ConfigurationStore(directory: directory).load()
+            XCTAssertEqual(loaded.0, expected)
+            XCTAssertEqual(loaded.1, .none)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.url)) as? [String: Any])
+            XCTAssertEqual(object["schema_version"] as? Int, 2)
+            XCTAssertEqual(Set(object.keys), ["schema_version", "scroll"])
+            let scroll = try XCTUnwrap(object["scroll"] as? [String: Any])
+            XCTAssertEqual(Set(scroll.keys), ["enabled", "line_direction", "line_amount_percent"])
+            XCTAssertEqual(scroll["line_amount_percent"] as? UInt32, amount)
+        }
+    }
+
+    func testV1MigratesOnlyAfterAtomicPersistence() throws {
+        let store = ConfigurationStore(directory: directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for enabled in [false, true] {
+            for direction in ScrollDirection.allCases {
+                let source = Data("{\"schema_version\":1,\"scroll\":{\"enabled\":\(enabled),\"line_direction\":\"\(direction.rawValue)\"}}".utf8)
+                try source.write(to: store.url)
+                let loaded = store.load()
+                XCTAssertEqual(loaded.0, .init(enabled: enabled, direction: direction, amountPercent: 100))
+                XCTAssertEqual(loaded.1, .none)
+                let migrated = try Data(contentsOf: store.url)
+                let object = try XCTUnwrap(JSONSerialization.jsonObject(with: migrated) as? [String: Any])
+                XCTAssertEqual(object["schema_version"] as? Int, 2)
+                XCTAssertEqual((object["scroll"] as? [String: Any])?["line_amount_percent"] as? Int, 100)
+                XCTAssertEqual(ConfigurationStore(directory: directory).load().0, loaded.0)
+                XCTAssertEqual(try Data(contentsOf: store.url), migrated)
+            }
+        }
+    }
+
+    func testFailedMigrationPreservesV1WithoutActivation() throws {
+        let store = ConfigurationStore(directory: directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = Data(#"{"schema_version":1,"scroll":{"enabled":true,"line_direction":"reverse"}}"#.utf8)
+        try source.write(to: store.url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path) }
+        let loaded = store.load()
+        XCTAssertEqual(loaded.0, .default)
+        XCTAssertEqual(loaded.1, .saveFailed)
+        XCTAssertEqual(try Data(contentsOf: store.url), source)
+        let runtime = InputRuntime(store: store)
+        XCTAssertEqual(runtime.configuration, .default)
+        XCTAssertEqual(runtime.configurationAttention, .saveFailed)
+        XCTAssertNotEqual(runtime.state, .active)
+        XCTAssertFalse(runtime.canEditConfiguration)
+        XCTAssertEqual(try Data(contentsOf: store.url), source)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        runtime.setDirection(.reverse)
+        runtime.setEnabled(true)
+        runtime.resetMalformedConfiguration()
+        runtime.refresh()
+        XCTAssertEqual(runtime.configuration, .default)
+        XCTAssertEqual(runtime.configurationAttention, .saveFailed)
+        XCTAssertFalse(runtime.canEditConfiguration)
+        XCTAssertNotEqual(runtime.state, .active)
+        XCTAssertEqual(try Data(contentsOf: store.url), source)
+
+        let restarted = InputRuntime(store: store)
+        XCTAssertEqual(restarted.configuration, .init(enabled: true, direction: .reverse, amountPercent: 100))
+        XCTAssertEqual(restarted.configurationAttention, .none)
+        XCTAssertTrue(restarted.canEditConfiguration)
     }
 
     func testUnreadableConfigurationDefaultsWithAttentionWithoutRewrite() throws {
@@ -63,14 +128,46 @@ final class ConfigurationStoreTests: XCTestCase {
         }
     }
 
+    func testInvalidV2AndUnsupportedOlderConfigurationNeverRewrite() throws {
+        let store = ConfigurationStore(directory: directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var documents = ["24", "401", "-1", "4294967296", "18446744073709551615", "137.5", "137.0", "true", "false", "\"137\"", "null", "{}", "[]"].map {
+            "{\"schema_version\":2,\"scroll\":{\"enabled\":true,\"line_direction\":\"reverse\",\"line_amount_percent\":\($0)}}"
+        }
+        documents += [
+            #"{"schema_version":2,"scroll":{"enabled":true,"line_direction":"reverse"}}"#,
+            #"{"schema_version":2,"scroll":{"enabled":true,"line_direction":"reverse","line_amount_percent":137,"extra":true}}"#,
+            #"{"schema_version":2,"scroll":{"enabled":true,"line_direction":"reverse","line_amount_percent":137},"extra":true}"#,
+            #"{"schema_version":2,"scroll":{"enabled":1,"line_direction":"reverse","line_amount_percent":137}}"#,
+            #"{"schema_version":2,"scroll":{"enabled":true,"line_direction":"invalid","line_amount_percent":137}}"#,
+            #"{"schema_version":2,"scroll":{"line_direction":"reverse","line_amount_percent":137}}"#,
+            #"{"schema_version":2,"scroll":{"enabled":true,"line_amount_percent":137}}"#,
+            #"{"schema_version":0,"scroll":{"enabled":true,"line_direction":"reverse"}}"#,
+            #"{"schema_version":-1,"scroll":{"enabled":true,"line_direction":"reverse"}}"#,
+            #"{"schema_version":true,"scroll":{}}"#,
+            #"{"schema_version":2.0,"scroll":{}}"#,
+        ]
+        for text in documents {
+            let data = Data(text.utf8)
+            try data.write(to: store.url)
+            let loaded = store.load()
+            XCTAssertEqual(loaded.0, .default, text)
+            XCTAssertEqual(loaded.1, .malformed, text)
+            XCTAssertEqual(try Data(contentsOf: store.url), data, text)
+        }
+    }
+
     func testNewerConfigurationIsReadOnlyWithoutRewrite() throws {
         let store = ConfigurationStore(directory: directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = Data(#"{"schema_version":2,"scroll":"not-v1"}"#.utf8)
-        try data.write(to: store.url)
-        XCTAssertEqual(store.load().0, .default)
-        XCTAssertEqual(store.load().1, .newerSchema)
-        XCTAssertEqual(try Data(contentsOf: store.url), data)
+        for version in ["3", "18446744073709551615"] {
+            let data = Data("{\"schema_version\":\(version),\"scroll\":\"unknown-future-data\"}".utf8)
+            try data.write(to: store.url)
+            let loaded = store.load()
+            XCTAssertEqual(loaded.0, .default)
+            XCTAssertEqual(loaded.1, .newerSchema)
+            XCTAssertEqual(try Data(contentsOf: store.url), data)
+        }
     }
 
     func testPersistFailureLeavesExistingConfigurationUnchanged() throws {

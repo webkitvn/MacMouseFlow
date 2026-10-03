@@ -17,6 +17,19 @@ final class InputRuntimeTests: XCTestCase {
         InputRuntime(store: ConfigurationStore(directory: directory))
     }
 
+    func testLoadedAmountSurvivesRefreshAndExistingControls() throws {
+        let store = ConfigurationStore(directory: directory)
+        XCTAssertTrue(store.persist(.init(enabled: false, direction: .reverse, amountPercent: 137)))
+        let runtime = InputRuntime(store: store)
+        XCTAssertEqual(runtime.configuration.amountPercent, 137)
+        runtime.refresh()
+        runtime.setDirection(.preserve)
+        runtime.setEnabled(true)
+        runtime.setEnabled(false)
+        XCTAssertEqual(runtime.configuration, .init(enabled: false, direction: .preserve, amountPercent: 137))
+        XCTAssertEqual(store.load().0, runtime.configuration)
+    }
+
     func testStateResolutionContract() {
         XCTAssertEqual(InputRuntimeState.resolve(enabled: false, accessibilityTrusted: true, runtimeStatus: .active, attention: .none), .off)
         XCTAssertEqual(InputRuntimeState.resolve(enabled: false, accessibilityTrusted: false, runtimeStatus: .unavailable, attention: .none), .off)
@@ -59,6 +72,14 @@ final class InputRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.configurationAttention, .saveFailed)
         XCTAssertNotEqual(runtime.state, .off)
         XCTAssertNotEqual(runtime.state, .configurationNeedsAttention)
+        XCTAssertTrue(runtime.canEditConfiguration)
+
+        try FileManager.default.removeItem(at: store.url)
+        XCTAssertTrue(store.persist(committed))
+        runtime.setDirection(.preserve)
+        XCTAssertEqual(runtime.configuration, .init(enabled: true, direction: .preserve))
+        XCTAssertEqual(runtime.configurationAttention, .none)
+        XCTAssertEqual(store.load().0, runtime.configuration)
     }
 
     func testReleasingRuntimeDoesNotBlockOrPoisonSubsequentRuntimes() {
