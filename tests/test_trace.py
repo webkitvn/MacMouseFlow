@@ -22,6 +22,12 @@ class TraceTests(unittest.TestCase):
  def test_accepts_engine_unavailable_as_preserve_reason(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);r=self.record();r["decision"]="preserve";r["reason_code"]="engine_unavailable";r["native_outcome"]="preserved";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"failure"));self.assertEqual(x.returncode,0,x.stderr)
+ def test_exports_native_rejected_replacement_and_rejects_near_misses(self):
+  with tempfile.TemporaryDirectory() as root:
+   b=self.bundle(root);r=self.record();r["native_outcome"]="preserved";r["reason_code"]="preserve";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");target=pathlib.Path(root)/"rejected";x=self.trace(root,"export","run-1",str(target))
+   self.assertEqual(x.returncode,0,x.stderr);self.assertEqual(json.loads((target/"trace-0.jsonl").read_text()),r)
+   for key,value in [("granularity","pixel_based"),("native_outcome","applied"),("reason_code","replace"),("reason_code","engine_unavailable")]:
+    invalid={**r,key:value};(b/"trace-0.jsonl").write_text(json.dumps(invalid)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"invalid"));self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)
  def test_rejects_suppress(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);r=self.record();r["decision"]="suppress";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"suppress"));self.assertEqual(x.returncode,2)

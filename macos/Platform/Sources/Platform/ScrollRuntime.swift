@@ -13,18 +13,31 @@ public enum ScrollAdapter {
         engine.evaluate(horizontal: horizontal, vertical: vertical)
     }
 
-    public static func apply(_ event: CGEvent, decision: InputDecision) {
-        guard case let .replace(horizontal, vertical) = decision else { return }
-        event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: vertical)
-        event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: horizontal)
+    @discardableResult public static func apply(_ event: CGEvent, decision: InputDecision) -> UInt8 {
+        guard case let .replace(horizontal, vertical) = decision else { return 0 }
+        // Conservative project-safe Delta bounds; not a universal platform range guarantee.
+        // Preflight the selected fields before either axis can mutate the original event.
+        let horizontalLimit: Int64 = horizontal % 100 == 0 ? 3_276_700 : 3_276_799
+        let verticalLimit: Int64 = vertical % 100 == 0 ? 3_276_700 : 3_276_799
+        guard (-3_276_800...horizontalLimit).contains(horizontal),
+              (-3_276_800...verticalLimit).contains(vertical) else { return 2 }
+        if vertical % 100 == 0 {
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: vertical / 100)
+        } else {
+            event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: Double(vertical) / 100)
+        }
+        if horizontal % 100 == 0 {
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: horizontal / 100)
+        } else {
+            event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: Double(horizontal) / 100)
+        }
+        return 1
     }
 
     @discardableResult public static func process(_ event: CGEvent, engine: PointerInputEngine) -> UInt8 {
         guard event.type == .scrollWheel, event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else { return 0 }
         guard let decision = evaluate(horizontal: event.getIntegerValueField(.scrollWheelEventDeltaAxis2), vertical: event.getIntegerValueField(.scrollWheelEventDeltaAxis1), engine: engine) else { return 2 }
-        apply(event, decision: decision)
-        if case .preserve = decision { return 0 }
-        return 1
+        return apply(event, decision: decision)
     }
 }
 
@@ -271,12 +284,12 @@ public final class ScrollRuntime {
             let extracted = DispatchTime.now().uptimeNanoseconds
             let decision = lineBased ? ScrollAdapter.evaluate(horizontal: horizontal, vertical: vertical, engine: state.engine) : nil
             let evaluated = DispatchTime.now().uptimeNanoseconds
-            if let decision { ScrollAdapter.apply(event, decision: decision) }
+            let outcome = decision.map { ScrollAdapter.apply(event, decision: $0) } ?? 0
             let applied = DispatchTime.now().uptimeNanoseconds
             let unavailable = lineBased && decision == nil
             let code: UInt8
             if case .replace? = decision { code = 1 } else { code = 0 }
-            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: code == 1 ? 1 : 0, reason: lineBased ? (unavailable ? 3 : (code == 1 ? 2 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start)
+            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: outcome == 1 ? 1 : 0, reason: lineBased ? (unavailable ? 3 : (outcome == 1 ? 2 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start)
         }
         return Unmanaged.passUnretained(event)
     }
