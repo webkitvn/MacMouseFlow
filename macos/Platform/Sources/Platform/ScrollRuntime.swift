@@ -48,7 +48,9 @@ final class TapState: @unchecked Sendable {
     // reads are same-thread. The lock makes `runtimeStatus()`'s cross-thread read safe.
     private let lock = NSLock()
     let engine: PointerInputEngine
-    let trace = TracePipeline()
+    let trace: TracePipeline?
+    let configRevision: UInt64?
+    private let ownsTrace: Bool
     let ready = DispatchSemaphore(value: 0)
     let stopped = DispatchSemaphore(value: 0)
     private var lifecycle = Lifecycle.idle
@@ -59,7 +61,12 @@ final class TapState: @unchecked Sendable {
 
     private enum Lifecycle { case idle, starting, running, cancelling, finished }
 
-    init(engine: PointerInputEngine) { self.engine = engine }
+    init(engine: PointerInputEngine, trace: TracePipeline? = TracePipeline(), configRevision: UInt64? = nil, ownsTrace: Bool = true) {
+        self.engine = engine
+        self.trace = trace
+        self.configRevision = configRevision
+        self.ownsTrace = ownsTrace
+    }
 
     func begin() -> Bool {
         lock.lock()
@@ -181,8 +188,10 @@ final class TapState: @unchecked Sendable {
         }
         lifecycle = .finished
         runLoop = nil
-        trace?.lifecycle(1)
-        trace?.close()
+        if ownsTrace {
+            trace?.lifecycle(1)
+            trace?.close()
+        }
         lock.unlock()
         stopped.signal()
     }
@@ -212,9 +221,16 @@ public final class ScrollRuntime {
     private let coordinatorLock = NSLock()
     private var joined = false
 
-    public init?(direction: ScrollDirection = .preserve, amountPercent: UInt32 = 100) {
-        guard AXIsProcessTrusted(), let engine = PointerInputEngine(), engine.setDirection(direction, amountPercent: amountPercent) else { return nil }
-        let state = TapState(engine: engine)
+    public convenience init?(direction: ScrollDirection = .preserve, amountPercent: UInt32 = 100) {
+        self.init(direction: direction, amountPercent: amountPercent, trace: TracePipeline(), configRevision: nil, ownsTrace: true)
+    }
+
+    init?(direction: ScrollDirection, amountPercent: UInt32, trace: TracePipeline?, configRevision: UInt64?, ownsTrace: Bool = false) {
+        guard AXIsProcessTrusted(), let engine = PointerInputEngine(), engine.setDirection(direction, amountPercent: amountPercent) else {
+            if ownsTrace { trace?.close() }
+            return nil
+        }
+        let state = TapState(engine: engine, trace: trace, configRevision: configRevision, ownsTrace: ownsTrace)
         self.state = state
         thread = Thread { state.run() }
         thread.name = "MacMouseFlow CGEventTap"
@@ -289,7 +305,7 @@ public final class ScrollRuntime {
             let unavailable = lineBased && decision == nil
             let code: UInt8
             if case .replace? = decision { code = 1 } else { code = 0 }
-            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: outcome == 1 ? 1 : 0, reason: lineBased ? (unavailable ? 3 : (outcome == 1 ? 2 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start)
+            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: outcome == 1 ? 1 : 0, reason: lineBased ? (unavailable ? 3 : (outcome == 1 ? 2 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start, configRevision: state.configRevision)
         }
         return Unmanaged.passUnretained(event)
     }

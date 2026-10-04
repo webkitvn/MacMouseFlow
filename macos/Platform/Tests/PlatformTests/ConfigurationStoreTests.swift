@@ -5,12 +5,16 @@ import XCTest
 
 final class ConfigurationStoreTests: XCTestCase {
     private var directory: URL!
+    private var traceEnvironment: String?
 
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        traceEnvironment = ProcessInfo.processInfo.environment["MMF_TRACE"]
+        setenv("MMF_TRACE", "0", 1)
     }
 
     override func tearDownWithError() throws {
+        if let traceEnvironment { setenv("MMF_TRACE", traceEnvironment, 1) } else { unsetenv("MMF_TRACE") }
         try? FileManager.default.removeItem(at: directory)
     }
 
