@@ -36,39 +36,40 @@ Use the smallest tool that can resolve the current task.
 
 Use Oracle only for material second-model review, architecture/design uncertainty, or an explicit review requirement. Treat its output as advisory and verify material conclusions against repository evidence and tests.
 
-Always use ChatGPT through the browser engine with manual login and the dedicated project. Do not let Oracle auto-select API mode.
+Use `--engine browser` explicitly and the dedicated ChatGPT Project. API mode requires explicit user consent. Use an already signed-in Chrome and attach to a verified tab; do not use Oracle's launcher to navigate to the Project.
 
-Canonical invocation:
+Prepare Chrome on demand, not for the entire working session. Reuse a suitable existing browser only when its owner permits control; otherwise launch an isolated Chrome with a dedicated CDP endpoint and a signed-in profile. A temporary copy of the signed-in Chrome user-data directory is permitted, but launch that copy outside Oracle: `--copy-profile` cannot be combined with attach-running. Never delete source-profile cookies or authentication files. If redirected to login, first verify the actual process/profile, then ask the user to sign in there if needed.
+
+Each consultation has two steps:
+
+1. Open and verify the intended tab outside Oracle:
+   - **Fresh:** open a new tab at `https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project`. Wait for the exact `/project` URL and the `New chat in Mac Mouse Flow` composer. Obtain that tab's current CDP target ID; do not reuse a tab that has already become a conversation.
+   - **Continue:** when the user supplies a conversation URL, open that exact URL, wait for prior turns to finish loading, and verify its conversation ID has not changed. Obtain that tab's target ID. Do not navigate to `/project` or create a replacement chat. For a conversation linked to a saved Oracle session, prefer Oracle's `--followup <session-id>` recovery-aware continuation instead; inspect its inherited browser configuration before running it.
+   - Verify the endpoint belongs to the intended Chrome. If a particular model/effort is required, verify it in the UI before sending; `current` and Oracle's printed requested model name do not prove selection. Missing verification is a blocker, not permission to substitute.
+2. Attach to the verified target and capture the answer:
 
 ```bash
 oracle \
   --engine browser \
-  --browser-manual-login \
-  --browser-port 9223 \
-  --chatgpt-url "https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project" \
+  --browser-attach-running \
+  --remote-chrome "<verified-host:port>" \
+  --browser-tab "<verified-target-id>" \
+  --browser-model-strategy current \
+  --browser-archive never \
+  --slug "<unique-slug>" \
+  --timeout 10m \
+  --write-output "/tmp/<unique-slug>.md" \
   -p "<prompt>" \
   --file "<relevant-file>"
 ```
 
-For first login or login recovery, keep the browser open:
+Do not add launcher-only flags (`--browser-manual-login`, `--browser-port`, or `--copy-profile`) to this attach command. `--chatgpt-url` alone does not guarantee a fresh conversation. Never archive a user-supplied conversation.
 
-```bash
-oracle \
-  --engine browser \
-  --browser-manual-login \
-  --browser-keep-browser \
-  --browser-port 9223 \
-  --chatgpt-url "https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/project" \
-  -p "Confirm the project session is available."
-```
+Accept completion only after retrieving the answer and verifying the resulting conversation is in the intended Project: a fresh run has a new conversation ID; continuation retains the supplied ID. On timeout or ambiguous submission, inspect the session and conversation before retrying; do not blindly resend, use `--force`, or delete session metadata to bypass duplicate protection. `promptSubmitted: true` alone is not proof the user turn committed.
 
-Oracle opens Chrome with its persistent manual-login profile. Log into ChatGPT manually in that window when required. Subsequent runs reuse that profile until the session expires. Pin its DevTools endpoint to `9223`; do not use a remembered/random port.
+After successful capture, close only Chrome/tabs created for this consultation and remove any temporary copied profile after Chrome exits. Leave reused browsers untouched. Preserve owned browsers and temporary profiles for recovery on incomplete runs; do not interrupt a peer's Oracle process or Chrome.
 
-If a manual-login run reports `ECONNREFUSED`, recover the profile before retrying: stop Chrome processes whose command includes `--user-data-dir=$HOME/.oracle/browser-profile`, then remove `$HOME/.oracle/browser-profile/SingletonLock`, `SingletonCookie`, `SingletonSocket`, and `DevToolsActivePort`. Retry with `--browser-port 9223` and verify `curl -fsS http://127.0.0.1:9223/json/version` succeeds before consulting.
-
-For a fresh consultation, attach Oracle to a tab verified at the dedicated Project root (`/project`) with the `New chat in Mac Mouse Flow` composer visible; submitting there creates a new Project conversation. Do not rely on `--chatgpt-url` alone to establish fresh-conversation state. To continue one conversation, attach Oracle to its exact `https://chatgpt.com/g/g-p-6a8825fba8a88191b61159104f8bf9f8-mac-mouse-flow/c/<conversation-id>` URL.
-
-Do not switch to API mode, cookie-copy mode, another ChatGPT project, or a different browser-session strategy unless the active Issue explicitly requires it.
+Verified on Oracle 0.21.4: a fresh Project-root attachment created a new Project conversation and returned `ORACLE_ROOT_ATTACH_OK`; fixed-port recovery verified `http://127.0.0.1:9223/json/version` before an attached Project-root consultation returned `ORACLE_RECOVERY_ATTACH_OK`. Model-specific, attachment-based review, and long-history continuation remain unproven by these smoke tests.
 
 ## Start work
 
