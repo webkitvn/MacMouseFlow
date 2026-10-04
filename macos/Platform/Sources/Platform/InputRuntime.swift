@@ -49,12 +49,14 @@ public final class InputRuntime: ObservableObject {
 
     public func setEnabled(_ enabled: Bool) { commit(.init(enabled: enabled, direction: configuration.direction, amountPercent: configuration.amountPercent)) }
     public func setDirection(_ direction: ScrollDirection) { commit(.init(enabled: configuration.enabled, direction: direction, amountPercent: configuration.amountPercent)) }
+    public func setAmountPercent(_ amountPercent: UInt32) { commit(.init(enabled: configuration.enabled, direction: configuration.direction, amountPercent: amountPercent)) }
 
     public func resetMalformedConfiguration() {
         guard !migrationFailed, configurationAttention == .malformed || configurationAttention == .saveFailed else { return }
-        guard store.persist(.default) else {
-            configurationAttention = .saveFailed
-            publishState()
+        let result = store.persistResult(.default, resettingMalformed: true)
+        guard result == .none else {
+            configurationAttention = result
+            if result == .newerSchema || result == .malformed { reconcileIntent() } else { publishState() }
             return
         }
         configuration = .default
@@ -78,9 +80,10 @@ public final class InputRuntime: ObservableObject {
 
     private func commit(_ candidate: PersistedConfiguration) {
         guard canEditConfiguration, candidate != configuration else { return }
-        guard validate(direction: candidate.direction, amountPercent: candidate.amountPercent), store.persist(candidate) else {
-            configurationAttention = .saveFailed
-            publishState()
+        let result = store.persistResult(candidate)
+        guard result == .none else {
+            configurationAttention = result
+            if result == .newerSchema || result == .malformed { reconcileIntent() } else { publishState() }
             return
         }
         configuration = candidate

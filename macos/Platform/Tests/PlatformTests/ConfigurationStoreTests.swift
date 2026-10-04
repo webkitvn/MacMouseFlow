@@ -181,6 +181,75 @@ final class ConfigurationStoreTests: XCTestCase {
         XCTAssertFalse(store.persist(.init(enabled: true, direction: .reverse)))
     }
 
+    func testInvalidAmountPersistNeverChangesCommittedBytes() throws {
+        let store = ConfigurationStore(directory: directory)
+        let committed = PersistedConfiguration(enabled: true, direction: .reverse, amountPercent: 137)
+        XCTAssertTrue(store.persist(committed))
+        let bytes = try Data(contentsOf: store.url)
+        for amount: UInt32 in [0, 24, 401, .max] {
+            XCTAssertFalse(store.persist(.init(enabled: false, direction: .preserve, amountPercent: amount)))
+            XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+            XCTAssertEqual(store.load().0, committed)
+        }
+    }
+
+    func testSharedWriterPreservesNewerSchemasAndRejectsBooleanVersionClassification() throws {
+        let store = ConfigurationStore(directory: directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for version in ["3", "18446744073709551615"] {
+            let bytes = Data("{\"schema_version\":\(version),\"future\":true}".utf8)
+            try bytes.write(to: store.url)
+            XCTAssertFalse(store.persist(.init(enabled: true, direction: .reverse, amountPercent: 137)))
+            XCTAssertFalse(store.persist(.default))
+            XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+        }
+        for version in ["true", "false"] {
+            try Data("{\"schema_version\":\(version)}".utf8).write(to: store.url)
+            let runtime = InputRuntime(store: store)
+            XCTAssertEqual(runtime.configurationAttention, .malformed)
+            runtime.resetMalformedConfiguration()
+            XCTAssertEqual(runtime.configurationAttention, .none)
+            XCTAssertEqual(store.load().0, .default)
+        }
+    }
+
+    func testOversizedOrUncertainNumericSchemaCannotBeOverwritten() throws {
+        let store = ConfigurationStore(directory: directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for version in ["18446744073709551616", "9999999999999999999999999999999999999999", "2.0000000000000000001", "2.0000000000000004", "1e200", "3.5", "3e2"] {
+            let bytes = Data("{\"schema_version\":\(version),\"future\":true}".utf8)
+            try bytes.write(to: store.url)
+            XCTAssertEqual(store.load().1, .newerSchema)
+            XCTAssertFalse(store.persist(.default))
+            let runtime = InputRuntime(store: store)
+            XCTAssertFalse(runtime.canEditConfiguration)
+            runtime.resetMalformedConfiguration()
+            runtime.setAmountPercent(137)
+            runtime.setEnabled(true)
+            XCTAssertEqual(runtime.configuration, .default)
+            XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+        }
+    }
+
+    func testUnrepresentableVersionUsesAcceptedMalformedResetRecovery() throws {
+        let store = ConfigurationStore(directory: directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let version = "1" + String(repeating: "0", count: 166)
+        let bytes = Data("{\"schema_version\":\(version),\"future\":true}".utf8)
+        try bytes.write(to: store.url)
+        XCTAssertThrowsError(try JSONSerialization.jsonObject(with: bytes))
+        let runtime = InputRuntime(store: store)
+        XCTAssertEqual(runtime.configuration, .default)
+        XCTAssertEqual(runtime.configurationAttention, .malformed)
+        XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+        runtime.resetMalformedConfiguration()
+        XCTAssertEqual(runtime.configuration, .default)
+        XCTAssertEqual(runtime.configurationAttention, .none)
+        XCTAssertEqual(runtime.state, .off)
+        XCTAssertEqual(store.load().0, .default)
+        XCTAssertNotEqual(try Data(contentsOf: store.url), bytes)
+    }
+
     func testBridgeValidationAcceptsBothDirections() {
         XCTAssertTrue(validate(direction: .preserve))
         XCTAssertTrue(validate(direction: .reverse))
