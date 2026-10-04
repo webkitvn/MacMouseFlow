@@ -219,7 +219,7 @@ final class ConfigurationStoreTests: XCTestCase {
         for version in ["18446744073709551616", "9999999999999999999999999999999999999999", "2.0000000000000000001", "2.0000000000000004", "1e200", "3.5", "3e2"] {
             let bytes = Data("{\"schema_version\":\(version),\"future\":true}".utf8)
             try bytes.write(to: store.url)
-            XCTAssertEqual(store.load().1, .malformed)
+            XCTAssertEqual(store.load().1, .newerSchema)
             XCTAssertFalse(store.persist(.default))
             let runtime = InputRuntime(store: store)
             XCTAssertFalse(runtime.canEditConfiguration)

@@ -63,6 +63,16 @@ public final class ConfigurationStore {
             return (.default, .malformed)
         }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (.default, .malformed) }
+        let decoded = Self.decode(object)
+        guard decoded.1 == .none else { return decoded }
+        if Self.schemaVersion(in: object)?.intValue == 1 {
+            let result = persistResult(decoded.0)
+            guard result == .none else { return (.default, result) }
+        }
+        return decoded
+    }
+
+    private static func decode(_ object: [String: Any]) -> (PersistedConfiguration, ConfigurationAttention) {
         if let attention = Self.newerSchemaAttention(in: object) {
             return (.default, attention)
         }
@@ -85,10 +95,6 @@ public final class ConfigurationStore {
         }
         guard validate(direction: lineDirection, amountPercent: amountPercent) else { return (.default, .malformed) }
         let configuration = PersistedConfiguration(enabled: enabled.boolValue, direction: lineDirection, amountPercent: amountPercent)
-        if version.intValue == 1 {
-            let result = persistResult(configuration)
-            guard result == .none else { return (.default, result) }
-        }
         return (configuration, .none)
     }
 
@@ -104,14 +110,14 @@ public final class ConfigurationStore {
               CFGetTypeID(version) != CFBooleanGetTypeID(),
               version.compare(NSNumber(value: 2)) == .orderedDescending || version.decimalValue > Decimal(2) else { return nil }
         // ponytail: preservation is bounded by Foundation decoding/distinct representation (#108); raw-token parsing requires a new contract.
-        return schemaVersion(in: object) == nil ? .malformed : .newerSchema
+        return .newerSchema
     }
 
     public func persist(_ configuration: PersistedConfiguration) -> Bool {
         persistResult(configuration) == .none
     }
 
-    func persistResult(_ configuration: PersistedConfiguration) -> ConfigurationAttention {
+    func persistResult(_ configuration: PersistedConfiguration, resettingMalformed: Bool = false) -> ConfigurationAttention {
         guard validate(direction: configuration.direction, amountPercent: configuration.amountPercent) else { return .saveFailed }
         let document = Document(schemaVersion: 2, scroll: .init(enabled: configuration.enabled, lineDirection: configuration.direction, lineAmountPercent: configuration.amountPercent))
         guard let data = try? JSONEncoder().encode(document) else { return .saveFailed }
@@ -123,9 +129,11 @@ public final class ConfigurationStore {
             } catch CocoaError.fileReadNoSuchFile {
                 existing = nil
             }
-            if let existing,
-               let object = try? JSONSerialization.jsonObject(with: existing) as? [String: Any],
-               let attention = Self.newerSchemaAttention(in: object) { return attention }
+            if let existing {
+                let object = try? JSONSerialization.jsonObject(with: existing) as? [String: Any]
+                let attention = object.map { Self.decode($0).1 } ?? .malformed
+                guard attention == .none || (resettingMalformed && attention == .malformed) else { return attention }
+            }
             try data.write(to: url, options: .atomic)
             return .none
         } catch {

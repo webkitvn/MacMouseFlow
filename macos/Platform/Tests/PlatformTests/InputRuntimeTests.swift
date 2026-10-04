@@ -122,7 +122,7 @@ final class InputRuntimeTests: XCTestCase {
         try bytes.write(to: store.url)
         runtime.setAmountPercent(400)
         XCTAssertEqual(runtime.configuration, committed)
-        XCTAssertEqual(runtime.configurationAttention, .malformed)
+        XCTAssertEqual(runtime.configurationAttention, .newerSchema)
         XCTAssertFalse(runtime.canEditConfiguration)
         runtime.resetMalformedConfiguration()
         XCTAssertEqual(runtime.configuration, committed)
@@ -140,7 +140,7 @@ final class InputRuntimeTests: XCTestCase {
             try bytes.write(to: store.url)
             runtime.setAmountPercent(400)
             XCTAssertEqual(runtime.configuration, committed)
-            XCTAssertEqual(runtime.configurationAttention, .malformed)
+            XCTAssertEqual(runtime.configurationAttention, .newerSchema)
             XCTAssertFalse(runtime.canEditConfiguration)
             runtime.resetMalformedConfiguration()
             XCTAssertEqual(runtime.configuration, committed)
@@ -160,6 +160,34 @@ final class InputRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.configurationAttention, .newerSchema)
         XCTAssertFalse(runtime.canEditConfiguration)
         XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+    }
+
+    func testMalformedReplacementBlocksNormalTransactionsButAllowsExplicitReset() throws {
+        let store = ConfigurationStore(directory: directory)
+        let committed = PersistedConfiguration(enabled: false, direction: .reverse, amountPercent: 137)
+        for text in ["broken JSON", "{\"schema_version\":1" + String(repeating: "0", count: 166) + "}", #"{"schema_version":2}"#, #"{"schema_version":2,"scroll":{"enabled":1,"line_direction":"reverse","line_amount_percent":137}}"#, #"{"schema_version":2,"scroll":{"enabled":false,"line_direction":"reverse","line_amount_percent":401}}"#] {
+            for operation in 0..<3 {
+                try? FileManager.default.removeItem(at: store.url)
+                XCTAssertTrue(store.persist(committed))
+                let runtime = InputRuntime(store: store)
+                let bytes = Data(text.utf8)
+                try bytes.write(to: store.url)
+                switch operation {
+                case 0: runtime.setAmountPercent(400)
+                case 1: runtime.setDirection(.preserve)
+                default: runtime.setEnabled(true)
+                }
+                XCTAssertEqual(runtime.configuration, committed)
+                XCTAssertEqual(runtime.configurationAttention, .malformed)
+                XCTAssertFalse(runtime.canEditConfiguration)
+                XCTAssertNotEqual(runtime.state, .active)
+                XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+                runtime.resetMalformedConfiguration()
+                XCTAssertEqual(runtime.configuration, .default)
+                XCTAssertEqual(runtime.configurationAttention, .none)
+                XCTAssertEqual(store.load().0, .default)
+            }
+        }
     }
 
     func testStateResolutionContract() {

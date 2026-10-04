@@ -53,7 +53,7 @@ public final class InputRuntime: ObservableObject {
 
     public func resetMalformedConfiguration() {
         guard !migrationFailed, configurationAttention == .malformed || configurationAttention == .saveFailed else { return }
-        let result = store.persistResult(.default)
+        let result = store.persistResult(.default, resettingMalformed: true)
         guard result == .none else {
             configurationAttention = result
             if result == .newerSchema || result == .malformed { reconcileIntent() } else { publishState() }
