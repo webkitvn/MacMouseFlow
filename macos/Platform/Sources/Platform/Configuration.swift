@@ -62,12 +62,11 @@ public final class ConfigurationStore {
         } catch {
             return (.default, .malformed)
         }
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = object["schema_version"] as? NSNumber,
-              CFGetTypeID(version) != CFBooleanGetTypeID() else { return (.default, .malformed) }
-        let type = String(cString: version.objCType)
-        guard ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(type) else { return (.default, .malformed) }
-        guard version.compare(NSNumber(value: 2)) != .orderedDescending else { return (.default, .newerSchema) }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (.default, .malformed) }
+        if let attention = Self.newerSchemaAttention(in: object) {
+            return (.default, attention)
+        }
+        guard let version = Self.schemaVersion(in: object) else { return (.default, .malformed) }
         guard version.intValue == 1 || version.intValue == 2,
               Set(object.keys) == ["schema_version", "scroll"],
               let scroll = object["scroll"] as? [String: Any],
@@ -86,20 +85,51 @@ public final class ConfigurationStore {
         }
         guard validate(direction: lineDirection, amountPercent: amountPercent) else { return (.default, .malformed) }
         let configuration = PersistedConfiguration(enabled: enabled.boolValue, direction: lineDirection, amountPercent: amountPercent)
-        if version.intValue == 1, !persist(configuration) { return (.default, .saveFailed) }
+        if version.intValue == 1 {
+            let result = persistResult(configuration)
+            guard result == .none else { return (.default, result) }
+        }
         return (configuration, .none)
     }
 
+    private static func schemaVersion(in object: [String: Any]) -> NSNumber? {
+        guard let version = object["schema_version"] as? NSNumber,
+              CFGetTypeID(version) != CFBooleanGetTypeID(),
+              ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: version.objCType)) else { return nil }
+        return version
+    }
+
+    private static func newerSchemaAttention(in object: [String: Any]) -> ConfigurationAttention? {
+        guard let version = object["schema_version"] as? NSNumber,
+              CFGetTypeID(version) != CFBooleanGetTypeID(),
+              version.compare(NSNumber(value: 2)) == .orderedDescending || version.decimalValue > Decimal(2) else { return nil }
+        // ponytail: preservation is bounded by Foundation decoding/distinct representation (#108); raw-token parsing requires a new contract.
+        return schemaVersion(in: object) == nil ? .malformed : .newerSchema
+    }
+
     public func persist(_ configuration: PersistedConfiguration) -> Bool {
-        guard validate(direction: configuration.direction, amountPercent: configuration.amountPercent) else { return false }
+        persistResult(configuration) == .none
+    }
+
+    func persistResult(_ configuration: PersistedConfiguration) -> ConfigurationAttention {
+        guard validate(direction: configuration.direction, amountPercent: configuration.amountPercent) else { return .saveFailed }
         let document = Document(schemaVersion: 2, scroll: .init(enabled: configuration.enabled, lineDirection: configuration.direction, lineAmountPercent: configuration.amountPercent))
-        guard let data = try? JSONEncoder().encode(document) else { return false }
+        guard let data = try? JSONEncoder().encode(document) else { return .saveFailed }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let existing: Data?
+            do {
+                existing = try Data(contentsOf: url)
+            } catch CocoaError.fileReadNoSuchFile {
+                existing = nil
+            }
+            if let existing,
+               let object = try? JSONSerialization.jsonObject(with: existing) as? [String: Any],
+               let attention = Self.newerSchemaAttention(in: object) { return attention }
             try data.write(to: url, options: .atomic)
-            return true
+            return .none
         } catch {
-            return false
+            return .saveFailed
         }
     }
 }
