@@ -44,7 +44,7 @@ def validate(v,run,current):
   try: valid_id=str(uuid.UUID(v["operation_id"])).upper()==v["operation_id"]
   except ValueError: valid_id=False
   old,new,result=v["old_config_revision"],v["new_config_revision"],v["result_code"]
-  transition=(old is None and ((result in {"fresh","loaded","migrated"} and new==0) or (result not in {"fresh","loaded","migrated"} and new is None))) if v["name"]=="config.load" else (old is None and (new==0 if result=="migrated" else new is None)) if v["name"]=="config.migration" else (old is not None and (new==old+1 if result=="persisted" else new is None)) if v["name"]=="config.persist" else (old is not None and new==old) if v["name"]=="config.rollback" else (new is not None and v["enabled"] and (new==0 if old is None else new==old+1) if result=="active" else new is None and (not v["enabled"] if result=="disabled" else True))
+  transition=(old is None and ((result in {"fresh","loaded","migrated"} and new==0) or (result not in {"fresh","loaded","migrated"} and new is None))) if v["name"]=="config.load" else (old is None and (new==0 if result=="migrated" else new is None)) if v["name"]=="config.migration" else (old is not None and (new==old+1 if result=="persisted" else new is None)) if v["name"]=="config.persist" else (old is not None and new==old) if v["name"]=="config.rollback" else (new is not None and v["enabled"] and (new==0 if old is None else new==old+1) if result=="active" else new is None and (not v["enabled"] if result=="disabled" else v["enabled"]))
   if not valid_id or not transition:fail("record violates trace schema/privacy allowlist")
  else:fail("record violates trace schema/privacy allowlist")
  return v

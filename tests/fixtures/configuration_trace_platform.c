@@ -58,7 +58,7 @@ static CFMachPortRef create(CGEventTapLocation location, CGEventTapPlacement pla
     return tap->port;
 }
 static void enable(CFMachPortRef port, bool enabled) {
-    for (unsigned i = 0; i < atomic_load(&count); i++) if (taps[i].port == port) {
+    for (unsigned i = atomic_load(&count); i-- > 0;) if (taps[i].port == port) {
         atomic_store(&taps[i].enabled, enabled);
         if (!enabled && taps[i].timer) { CFRunLoopTimerInvalidate(taps[i].timer); CFRelease(taps[i].timer); taps[i].timer = NULL; }
         return;
@@ -66,7 +66,7 @@ static void enable(CFMachPortRef port, bool enabled) {
     abort();
 }
 static bool is_enabled(CFMachPortRef port) {
-    for (unsigned i = 0; i < atomic_load(&count); i++) if (taps[i].port == port) return atomic_load(&taps[i].enabled);
+    for (unsigned i = atomic_load(&count); i-- > 0;) if (taps[i].port == port) return atomic_load(&taps[i].enabled);
     return false;
 }
 #define INTERPOSE(replacement, original) \
@@ -76,3 +76,21 @@ INTERPOSE(trusted, AXIsProcessTrusted);
 INTERPOSE(create, CGEventTapCreate);
 INTERPOSE(enable, CGEventTapEnable);
 INTERPOSE(is_enabled, CGEventTapIsEnabled);
+
+#ifdef MMF_TEST_REUSED_PORT
+#include <assert.h>
+int main(void) {
+    CFMachPortRef reused = (CFMachPortRef)(uintptr_t)1;
+    taps[0].port = taps[1].port = reused;
+    atomic_store(&count, 2);
+    enable(reused, true);
+    assert(!atomic_load(&taps[0].enabled));
+    assert(atomic_load(&taps[1].enabled));
+    assert(is_enabled(reused));
+    atomic_store(&taps[0].enabled, true);
+    enable(reused, false);
+    assert(atomic_load(&taps[0].enabled));
+    assert(!is_enabled(reused));
+    return 0;
+}
+#endif

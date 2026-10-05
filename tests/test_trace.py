@@ -16,6 +16,9 @@ class TraceTests(unittest.TestCase):
     (b/"trace-0.jsonl").write_text(json.dumps({**r,key:value})+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"invalid"));self.assertEqual(x.returncode,2,x.stderr)
    for name,result,new in [("config.persist","write_failed",1),("config.activation","unavailable",1),("config.rollback","retained",1)]:
     (b/"trace-0.jsonl").write_text(json.dumps({**r,"name":name,"result_code":result,"new_config_revision":new})+"\n");self.assertEqual(self.trace(root,"export","run-1",str(pathlib.Path(root)/"invalid")).returncode,2)
+   for result,enabled in [("disabled",False),("unavailable",True)]:
+    valid={**active,"result_code":result,"enabled":enabled,"new_config_revision":None};(b/"trace-0.jsonl").write_text(json.dumps(valid)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/result));self.assertEqual(x.returncode,0,x.stderr)
+   invalid={**active,"result_code":"unavailable","enabled":False,"new_config_revision":None};(b/"trace-0.jsonl").write_text(json.dumps(invalid)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"disabled-unavailable"));self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)
  def test_export_sanitizes_truncated_line(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);r=self.record();(b/"trace-10.jsonl").write_text(json.dumps(r)+"\n{\"truncated\"");target=pathlib.Path(root)/"copy";x=self.trace(root,"export","run-1",str(target))
