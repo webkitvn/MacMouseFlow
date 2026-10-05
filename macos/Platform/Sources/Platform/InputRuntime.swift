@@ -25,7 +25,10 @@ public final class InputRuntime: ObservableObject {
 
     private let store: ConfigurationStore
     public let migrationFailed: Bool
-    private let lifecycle = LifecycleExecutor()
+    private let trace: TracePipeline?
+    private let lifecycle: LifecycleExecutor
+    private var operationID = UUID()
+    private var previousRevision: UInt64?
     private var accessibilityTrusted = false
     private var runtimeStatus: ScrollRuntimeStatus = .unavailable
     private var monitor: Timer?
@@ -33,9 +36,16 @@ public final class InputRuntime: ObservableObject {
 
     public init(store: ConfigurationStore = ConfigurationStore()) {
         self.store = store
-        let loaded = store.load()
-        (configuration, configurationAttention) = loaded
-        migrationFailed = loaded.1 == .saveFailed
+        trace = TracePipeline()
+        lifecycle = LifecycleExecutor(trace: trace)
+        let loaded = store.loadOutcome()
+        configuration = loaded.configuration
+        configurationAttention = loaded.attention
+        migrationFailed = loaded.result == "migration_failed"
+        trace?.configuration("config.load", operationID: operationID, oldRevision: nil, newRevision: loaded.attention == .none ? revision : nil, configuration: configuration, result: loaded.result)
+        if loaded.result == "migrated" || loaded.result == "migration_failed" {
+            trace?.configuration("config.migration", operationID: operationID, oldRevision: nil, newRevision: loaded.attention == .none ? revision : nil, configuration: configuration, result: loaded.result)
+        }
         lifecycle.onStatus = { [weak self] status in
             guard let self else { return }
             self.runtimeStatus = status
@@ -53,17 +63,7 @@ public final class InputRuntime: ObservableObject {
 
     public func resetMalformedConfiguration() {
         guard !migrationFailed, configurationAttention == .malformed || configurationAttention == .saveFailed else { return }
-        let result = store.persistResult(.default, resettingMalformed: true)
-        guard result == .none else {
-            configurationAttention = result
-            if result == .newerSchema || result == .malformed { reconcileIntent() } else { publishState() }
-            return
-        }
-        configuration = .default
-        configurationAttention = .none
-        revision &+= 1
-        runtimeStatus = .unavailable
-        reconcileIntent()
+        commit(.default, resettingMalformed: true)
     }
 
     public func refresh() { reconcileIntent() }
@@ -78,14 +78,21 @@ public final class InputRuntime: ObservableObject {
         lifecycle.shutdown()
     }
 
-    private func commit(_ candidate: PersistedConfiguration) {
-        guard canEditConfiguration, candidate != configuration else { return }
-        let result = store.persistResult(candidate)
-        guard result == .none else {
-            configurationAttention = result
-            if result == .newerSchema || result == .malformed { reconcileIntent() } else { publishState() }
+    private func commit(_ candidate: PersistedConfiguration, resettingMalformed: Bool = false) {
+        guard resettingMalformed || (canEditConfiguration && candidate != configuration) else { return }
+        let operation = UUID()
+        let result = store.persistOutcome(candidate, resettingMalformed: resettingMalformed)
+        let committed = result.attention == .none
+        // Rejected values are not configuration evidence; retain the allowlisted committed snapshot.
+        trace?.configuration("config.persist", operationID: operation, oldRevision: revision, newRevision: committed ? revision &+ 1 : nil, configuration: committed ? candidate : configuration, result: result.result)
+        guard committed else {
+            trace?.configuration("config.rollback", operationID: operation, oldRevision: revision, newRevision: revision, configuration: configuration, result: "retained")
+            configurationAttention = result.attention
+            if result.attention == .newerSchema || result.attention == .malformed { reconcileIntent() } else { publishState() }
             return
         }
+        operationID = operation
+        previousRevision = revision
         configuration = candidate
         configurationAttention = .none
         revision &+= 1
@@ -104,7 +111,7 @@ public final class InputRuntime: ObservableObject {
             self.monitor = nil
         }
         publishState()
-        lifecycle.request(enabled: configuration.enabled && canRun, trusted: accessibilityTrusted, direction: configuration.direction, amountPercent: configuration.amountPercent, revision: revision)
+        lifecycle.request(enabled: configuration.enabled, trusted: accessibilityTrusted && canRun, direction: configuration.direction, amountPercent: configuration.amountPercent, revision: revision, operationID: operationID, previousRevision: previousRevision)
     }
 
     private func publishState() {
@@ -119,11 +126,19 @@ private final class LifecycleExecutor: @unchecked Sendable {
         var direction: ScrollDirection
         var amountPercent: UInt32
         var revision: UInt64
+        var operationID: UUID
+        var previousRevision: UInt64?
     }
+
+    private let trace: TracePipeline?
+    private var lastActivation: Intent?
+    private var lastActivationResult: String?
+
+    init(trace: TracePipeline?) { self.trace = trace }
 
     private let queue = DispatchQueue(label: "io.github.webkitvn.macmouseflow.lifecycle")
     private let lock = NSLock()
-    private var intent = Intent(enabled: false, trusted: false, direction: .preserve, amountPercent: 100, revision: 0)
+    private var intent = Intent(enabled: false, trusted: false, direction: .preserve, amountPercent: 100, revision: 0, operationID: UUID(), previousRevision: nil)
     private var pending = false
     private var draining = false
     private var shutdownRequested = false
@@ -135,10 +150,10 @@ private final class LifecycleExecutor: @unchecked Sendable {
     private var startFailures = 0
     private var nextStartAllowed = DispatchTime.now()
 
-    func request(enabled: Bool, trusted: Bool, direction: ScrollDirection, amountPercent: UInt32, revision: UInt64) {
+    func request(enabled: Bool, trusted: Bool, direction: ScrollDirection, amountPercent: UInt32, revision: UInt64, operationID: UUID, previousRevision: UInt64?) {
         lock.lock()
         guard !shutdownRequested else { lock.unlock(); return }
-        intent = Intent(enabled: enabled, trusted: trusted, direction: direction, amountPercent: amountPercent, revision: revision)
+        intent = Intent(enabled: enabled, trusted: trusted, direction: direction, amountPercent: amountPercent, revision: revision, operationID: operationID, previousRevision: previousRevision)
         pending = true
         guard !draining else { lock.unlock(); return }
         draining = true
@@ -156,6 +171,8 @@ private final class LifecycleExecutor: @unchecked Sendable {
         queue.async {
             self.runtime?.stop()
             self.runtime = nil
+            self.trace?.lifecycle(1)
+            self.trace?.close()
         }
     }
 
@@ -184,7 +201,11 @@ private final class LifecycleExecutor: @unchecked Sendable {
     private func reconcile() {
         guard !isShutdown() else { return }
         let desired = latestIntent()
-        guard desired.enabled, desired.trusted else { retire(); return }
+        guard desired.enabled, desired.trusted else {
+            retire()
+            activation(desired, result: desired.enabled ? "unavailable" : "disabled")
+            return
+        }
         if let runtime {
             guard activeRevision == desired.revision else {
                 runtime.stop()
@@ -197,15 +218,22 @@ private final class LifecycleExecutor: @unchecked Sendable {
                 self.runtime = nil
                 activeRevision = nil
                 registerStartFailure()
+                activation(desired, result: "unavailable")
                 publish(.unavailable)
                 return
             }
+            activation(desired, result: "active")
             publish(.active)
             return
         }
-        guard DispatchTime.now() >= nextStartAllowed else { publish(.unavailable); return }
-        guard let candidate = ScrollRuntime(direction: desired.direction, amountPercent: desired.amountPercent), candidate.start() else {
+        guard DispatchTime.now() >= nextStartAllowed else {
+            activation(desired, result: "unavailable")
+            publish(.unavailable)
+            return
+        }
+        guard let candidate = ScrollRuntime(direction: desired.direction, amountPercent: desired.amountPercent, trace: trace, configRevision: desired.revision), candidate.start() else {
             registerStartFailure()
+            activation(desired, result: "unavailable")
             publish(.unavailable)
             return
         }
@@ -223,13 +251,22 @@ private final class LifecycleExecutor: @unchecked Sendable {
         guard candidate.status == .active else {
             candidate.stop()
             registerStartFailure()
+            activation(desired, result: "unavailable")
             publish(.unavailable)
             return
         }
         runtime = candidate
         activeRevision = desired.revision
         resetRetry()
+        activation(desired, result: "active")
         publish(.active)
+    }
+
+    private func activation(_ desired: Intent, result: String) {
+        guard lastActivation != desired || lastActivationResult != result else { return }
+        lastActivation = desired
+        lastActivationResult = result
+        trace?.configuration("config.activation", operationID: desired.operationID, oldRevision: desired.previousRevision, newRevision: result == "active" ? desired.revision : nil, configuration: .init(enabled: desired.enabled, direction: desired.direction, amountPercent: desired.amountPercent), result: result)
     }
 
     private func retire() {

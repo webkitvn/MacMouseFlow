@@ -4,17 +4,198 @@ import XCTest
 
 final class InputRuntimeTests: XCTestCase {
     private var directory: URL!
+    private var traceEnvironment: String?
 
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        traceEnvironment = ProcessInfo.processInfo.environment["MMF_TRACE"]
+        setenv("MMF_TRACE", "0", 1)
     }
 
     override func tearDownWithError() throws {
+        if let traceEnvironment { setenv("MMF_TRACE", traceEnvironment, 1) } else { unsetenv("MMF_TRACE") }
         try? FileManager.default.removeItem(at: directory)
     }
 
     private func runtime() -> InputRuntime {
         InputRuntime(store: ConfigurationStore(directory: directory))
+    }
+
+    func testProductionConfigurationActivationAndInputBundle() throws {
+        guard let root = ProcessInfo.processInfo.environment["MMF_TEST_CONFIGURATION_TRACE_ROOT"] else {
+            throw XCTSkip("Run through tests/test_runtime_trace_bundle.py platform-boundary fixture")
+        }
+        let fixture = URL(fileURLWithPath: root)
+        let traceDirectory = fixture.appendingPathComponent("traces")
+        setenv("MMF_TRACE_DIR", traceDirectory.path, 1)
+        setenv("MMF_TRACE", "1", 1)
+        defer { unsetenv("MMF_TRACE_DIR"); setenv("MMF_TRACE", "0", 1) }
+        let store = ConfigurationStore(directory: fixture.appendingPathComponent("config"))
+        XCTAssertTrue(store.persist(.init(enabled: true, direction: .reverse, amountPercent: 137)))
+        var subject: InputRuntime? = InputRuntime(store: store)
+        func waitFor(_ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(5)
+            while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            XCTAssertTrue(condition())
+        }
+        func records() -> [[String: Any]] {
+            let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
+            return runs.flatMap { run in
+                ((try? FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension == "jsonl" }.flatMap { file in
+                    ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+                }
+            }
+        }
+        let failure = ProcessInfo.processInfo.environment["MMF_TEST_TAP_FAILURE"] != nil
+        if failure {
+            waitFor { records().contains { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "unavailable" } }
+            subject?.setAmountPercent(25)
+            waitFor {
+                let all = records()
+                guard let persisted = all.first(where: { $0["result_code"] as? String == "persisted" }) else { return false }
+                return all.contains { $0["name"] as? String == "config.activation" && $0["operation_id"] as? String == persisted["operation_id"] as? String && $0["result_code"] as? String == "unavailable" }
+            }
+        } else {
+            waitFor { subject?.state == .active && records().contains { $0["name"] as? String == "input.pipeline" && $0["config_revision"] as? Int == 0 } }
+            subject?.setAmountPercent(25)
+            waitFor { subject?.state == .active && records().contains { $0["name"] as? String == "input.pipeline" && $0["config_revision"] as? Int == 1 } }
+            let bytes = try Data(contentsOf: store.url)
+            subject?.setAmountPercent(401)
+            XCTAssertEqual(subject?.configuration.amountPercent, 25)
+            XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+            try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: store.url.deletingLastPathComponent().path)
+            subject?.setAmountPercent(400)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: store.url.deletingLastPathComponent().path)
+            XCTAssertEqual(subject?.configuration.amountPercent, 25)
+            XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+            let previousInputs = records().filter { $0["name"] as? String == "input.pipeline" }.count
+            waitFor { records().filter { $0["name"] as? String == "input.pipeline" }.count > previousInputs }
+        }
+        subject = nil
+        waitFor {
+            let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
+            return runs.contains { run in
+                guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+                return manifest["clean_shutdown"] as? Bool == true
+            }
+        }
+    }
+
+    func testLoadTraceDistinguishesMigrationAndReadOnlyFailures() throws {
+        let previousDirectory = ProcessInfo.processInfo.environment["MMF_TRACE_DIR"]
+        defer {
+            if let previousDirectory { setenv("MMF_TRACE_DIR", previousDirectory, 1) } else { unsetenv("MMF_TRACE_DIR") }
+            setenv("MMF_TRACE", "0", 1)
+        }
+        for (text, result, readOnly) in [
+            (#"{"schema_version":1,"scroll":{"enabled":false,"line_direction":"reverse"}}"#, "migrated", false),
+            (#"{"schema_version":1,"scroll":{"enabled":false,"line_direction":"reverse"}}"#, "migration_failed", true),
+            (#"{"schema_version":3,"future":true}"#, "newer_schema_read_only", false),
+            ("broken JSON", "malformed", false),
+            (#"{"schema_version":2,"scroll":{"enabled":false,"line_direction":"reverse","line_amount_percent":137}}"#, "loaded", false)
+        ] {
+            let configDirectory = directory.appendingPathComponent(result)
+            let traceDirectory = directory.appendingPathComponent("trace-" + result)
+            try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+            let store = ConfigurationStore(directory: configDirectory)
+            let source = Data(text.utf8)
+            try source.write(to: store.url)
+            if readOnly { try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: configDirectory.path) }
+            setenv("MMF_TRACE_DIR", traceDirectory.path, 1)
+            setenv("MMF_TRACE", "1", 1)
+            var subject: InputRuntime? = InputRuntime(store: store)
+            XCTAssertEqual(subject?.configuration.amountPercent, result == "loaded" ? 137 : 100)
+            if result == "migration_failed" { XCTAssertTrue(subject?.migrationFailed == true) }
+            subject = nil
+            if readOnly { try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: configDirectory.path) }
+            if result != "migrated" { XCTAssertEqual(try Data(contentsOf: store.url), source) }
+            let deadline = Date().addingTimeInterval(5)
+            var load: [String: Any]?
+            while Date() < deadline, load == nil {
+                for run in (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? [] {
+                    guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")),
+                          let manifest = try JSONSerialization.jsonObject(with: data) as? [String: Any], manifest["clean_shutdown"] as? Bool == true else { continue }
+                    for file in (try? FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil)) ?? [] where file.pathExtension == "jsonl" {
+                        for line in (try String(contentsOf: file, encoding: .utf8)).split(separator: "\n") {
+                            let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+                            if record["name"] as? String == "config.load" { load = record }
+                        }
+                    }
+                }
+                if load == nil { Thread.sleep(forTimeInterval: 0.01) }
+            }
+            XCTAssertEqual(load?["result_code"] as? String, result)
+            if result == "loaded" || result == "migrated" { XCTAssertEqual(load?["new_config_revision"] as? Int, 0) }
+            else { XCTAssertTrue(load?["new_config_revision"] is NSNull) }
+        }
+    }
+
+    func testConfigurationTraceJoinsTransactionsAndRollback() throws {
+        let traceDirectory = directory.appendingPathComponent("traces")
+        let previousDirectory = ProcessInfo.processInfo.environment["MMF_TRACE_DIR"]
+        setenv("MMF_TRACE_DIR", traceDirectory.path, 1)
+        setenv("MMF_TRACE", "1", 1)
+        defer {
+            if let previousDirectory { setenv("MMF_TRACE_DIR", previousDirectory, 1) } else { unsetenv("MMF_TRACE_DIR") }
+            setenv("MMF_TRACE", "0", 1)
+        }
+        let store = ConfigurationStore(directory: directory)
+        var subject: InputRuntime? = InputRuntime(store: store)
+        for amount: UInt32 in [25, 100, 137, 400] { subject?.setAmountPercent(amount) }
+        let bytes = try Data(contentsOf: store.url)
+        subject?.setAmountPercent(401)
+        XCTAssertEqual(subject?.configuration.amountPercent, 400)
+        XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+        subject?.setAmountPercent(25)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        XCTAssertEqual(subject?.configuration.amountPercent, 400)
+        XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+        subject = nil
+        let deadline = Date().addingTimeInterval(5)
+        var records = [[String: Any]]()
+        var completedRun: URL?
+        while Date() < deadline {
+            let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
+            if let run = runs.first,
+               let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")),
+               let manifest = try JSONSerialization.jsonObject(with: data) as? [String: Any], manifest["clean_shutdown"] as? Bool == true {
+                completedRun = run
+                for file in try FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil) where file.pathExtension == "jsonl" {
+                    for line in try String(contentsOf: file, encoding: .utf8).split(separator: "\n") {
+                        records.append(try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]))
+                    }
+                }
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        records.sort { ($0["seq"] as? Int ?? 0) < ($1["seq"] as? Int ?? 0) }
+        let configurationRecords = records.filter { $0["component"] as? String == "configuration" }
+        XCTAssertEqual(configurationRecords.first { $0["name"] as? String == "config.load" }?["result_code"] as? String, "fresh")
+        let persisted = configurationRecords.filter { $0["result_code"] as? String == "persisted" }
+        XCTAssertEqual(persisted.compactMap { $0["line_amount_percent"] as? Int }, [25, 100, 137, 400])
+        for (index, record) in persisted.enumerated() {
+            XCTAssertEqual(record["old_config_revision"] as? Int, index)
+            XCTAssertEqual(record["new_config_revision"] as? Int, index + 1)
+        }
+        let rejected = try XCTUnwrap(configurationRecords.first { $0["result_code"] as? String == "validation_rejected" })
+        let rollback = try XCTUnwrap(configurationRecords.first { $0["name"] as? String == "config.rollback" })
+        XCTAssertEqual(rejected["operation_id"] as? String, rollback["operation_id"] as? String)
+        XCTAssertTrue(rejected["new_config_revision"] is NSNull)
+        XCTAssertEqual(rollback["new_config_revision"] as? Int, 4)
+        let writeFailure = try XCTUnwrap(configurationRecords.first { $0["result_code"] as? String == "write_failed" })
+        XCTAssertTrue(writeFailure["new_config_revision"] is NSNull)
+        XCTAssertTrue(configurationRecords.contains { $0["name"] as? String == "config.rollback" && $0["operation_id"] as? String == writeFailure["operation_id"] as? String && $0["new_config_revision"] as? Int == 4 })
+        XCTAssertFalse(configurationRecords.contains { $0["result_code"] as? String == "active" })
+        let run = try XCTUnwrap(completedRun)
+        let export = Process()
+        export.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        export.arguments = ["python3", repository.appendingPathComponent("scripts/trace.py").path, "export", run.lastPathComponent, directory.appendingPathComponent("export").path]
+        try export.run()
+        export.waitUntilExit()
+        XCTAssertEqual(export.terminationStatus, 0)
     }
 
     func testLoadedAmountSurvivesRefreshAndExistingControls() throws {

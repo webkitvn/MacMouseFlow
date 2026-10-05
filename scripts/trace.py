@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate, follow, and export local MacMouseFlow diagnostic bundles."""
 from __future__ import annotations
-import argparse, datetime, json, os, shutil, sys, tempfile, time
+import argparse, datetime, json, os, shutil, sys, tempfile, time, uuid
 from pathlib import Path
 ROOT = Path(os.environ.get("MMF_TRACE_DIR", Path.home() / "Library/Application Support/io.github.webkitvn.macmouseflow/Traces"))
 def fail(m): print(f"TRACE_ERROR: {m}", file=sys.stderr); raise SystemExit(2)
@@ -36,7 +36,16 @@ def validate(v,run,current):
   keys={"schema_version","run_id","seq","t_ns","level","component","name","input_seq","horizontal_lines","vertical_lines","granularity","decision","native_outcome","reason_code","config_revision","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"};vocabulary=("trace","native.input") if current else ("debug","input")
   current_valid={("pixel_based","preserve","preserved","not_line_based"),("line_based","preserve","preserved","preserve"),("line_based","preserve","preserved","engine_unavailable"),("line_based","replace","applied","replace"),("line_based","replace","preserved","preserve")}
   historic_valid=current_valid|{("line_based","engine_unavailable","preserved","engine_unavailable")}
-  if set(v)!=keys or not(all(exact(v[k],int) and v[k]>=0 for k in {"seq","t_ns","input_seq","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"}) and exact(v["horizontal_lines"],int) and exact(v["vertical_lines"],int) and (v["level"],v["component"]) == vocabulary and (v["granularity"],v["decision"],v["native_outcome"],v["reason_code"]) in (current_valid if current else historic_valid) and v["config_revision"] is None):fail("record violates trace schema/privacy allowlist")
+  if set(v)!=keys or not(all(exact(v[k],int) and v[k]>=0 for k in {"seq","t_ns","input_seq","extraction_ns","rust_eval_ns","native_apply_ns","total_ns"}) and exact(v["horizontal_lines"],int) and exact(v["vertical_lines"],int) and (v["level"],v["component"]) == vocabulary and (v["granularity"],v["decision"],v["native_outcome"],v["reason_code"]) in (current_valid if current else historic_valid) and (v["config_revision"] is None or current and exact(v["config_revision"],int) and 0<=v["config_revision"]<18446744073709551615)):fail("record violates trace schema/privacy allowlist")
+ elif v.get("name") in {"config.load","config.migration","config.persist","config.rollback","config.activation"}:
+  keys={"schema_version","run_id","seq","t_ns","level","component","name","operation_id","old_config_revision","new_config_revision","line_amount_percent","line_direction","enabled","result_code"}
+  results={"config.load":{"fresh","loaded","migrated","migration_failed","read_failed","malformed","newer_schema_read_only"},"config.migration":{"migrated","migration_failed"},"config.persist":{"persisted","validation_rejected","write_failed","malformed","newer_schema_read_only"},"config.rollback":{"retained"},"config.activation":{"active","disabled","unavailable"}}
+  if not(current and set(v)==keys and exact(v["seq"],int) and v["seq"]>0 and exact(v["t_ns"],int) and v["t_ns"]>=0 and v["level"]=="info" and v["component"]=="configuration" and exact(v["operation_id"],str) and exact(v["line_amount_percent"],int) and 25<=v["line_amount_percent"]<=400 and exact(v["line_direction"],str) and v["line_direction"] in {"preserve","reverse"} and exact(v["enabled"],bool) and exact(v["result_code"],str) and v["result_code"] in results[v["name"]] and all(v[k] is None or exact(v[k],int) and 0<=v[k]<18446744073709551615 for k in {"old_config_revision","new_config_revision"})):fail("record violates trace schema/privacy allowlist")
+  try: valid_id=str(uuid.UUID(v["operation_id"])).upper()==v["operation_id"]
+  except ValueError: valid_id=False
+  old,new,result=v["old_config_revision"],v["new_config_revision"],v["result_code"]
+  transition=(old is None and ((result in {"fresh","loaded","migrated"} and new==0) or (result not in {"fresh","loaded","migrated"} and new is None))) if v["name"]=="config.load" else (old is None and (new==0 if result=="migrated" else new is None)) if v["name"]=="config.migration" else (old is not None and (new==old+1 if result=="persisted" else new is None)) if v["name"]=="config.persist" else (old is not None and new==old) if v["name"]=="config.rollback" else (new is not None and v["enabled"] and (new==0 if old is None else new==old+1) if result=="active" else new is None and (not v["enabled"] if result=="disabled" else v["enabled"]))
+  if not valid_id or not transition:fail("record violates trace schema/privacy allowlist")
  else:fail("record violates trace schema/privacy allowlist")
  return v
 def ordered(v,last):

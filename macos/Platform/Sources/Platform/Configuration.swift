@@ -54,22 +54,28 @@ public final class ConfigurationStore {
     }
 
     public func load() -> (PersistedConfiguration, ConfigurationAttention) {
+        let result = loadOutcome()
+        return (result.configuration, result.attention)
+    }
+
+    func loadOutcome() -> (configuration: PersistedConfiguration, attention: ConfigurationAttention, result: String) {
         let data: Data
         do {
             data = try Data(contentsOf: url)
         } catch CocoaError.fileReadNoSuchFile {
-            return (.default, .none)
+            return (.default, .none, "fresh")
         } catch {
-            return (.default, .malformed)
+            return (.default, .malformed, "read_failed")
         }
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (.default, .malformed) }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (.default, .malformed, "malformed") }
         let decoded = Self.decode(object)
-        guard decoded.1 == .none else { return decoded }
+        guard decoded.1 == .none else { return (decoded.0, decoded.1, decoded.1 == .newerSchema ? "newer_schema_read_only" : "malformed") }
         if Self.schemaVersion(in: object)?.intValue == 1 {
             let result = persistResult(decoded.0)
-            guard result == .none else { return (.default, result) }
+            guard result == .none else { return (.default, result, "migration_failed") }
+            return (decoded.0, .none, "migrated")
         }
-        return decoded
+        return (decoded.0, .none, "loaded")
     }
 
     private static func decode(_ object: [String: Any]) -> (PersistedConfiguration, ConfigurationAttention) {
@@ -118,9 +124,13 @@ public final class ConfigurationStore {
     }
 
     func persistResult(_ configuration: PersistedConfiguration, resettingMalformed: Bool = false) -> ConfigurationAttention {
-        guard validate(direction: configuration.direction, amountPercent: configuration.amountPercent) else { return .saveFailed }
+        persistOutcome(configuration, resettingMalformed: resettingMalformed).attention
+    }
+
+    func persistOutcome(_ configuration: PersistedConfiguration, resettingMalformed: Bool = false) -> (attention: ConfigurationAttention, result: String) {
+        guard validate(direction: configuration.direction, amountPercent: configuration.amountPercent) else { return (.saveFailed, "validation_rejected") }
         let document = Document(schemaVersion: 2, scroll: .init(enabled: configuration.enabled, lineDirection: configuration.direction, lineAmountPercent: configuration.amountPercent))
-        guard let data = try? JSONEncoder().encode(document) else { return .saveFailed }
+        guard let data = try? JSONEncoder().encode(document) else { return (.saveFailed, "write_failed") }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let existing: Data?
@@ -132,12 +142,12 @@ public final class ConfigurationStore {
             if let existing {
                 let object = try? JSONSerialization.jsonObject(with: existing) as? [String: Any]
                 let attention = object.map { Self.decode($0).1 } ?? .malformed
-                guard attention == .none || (resettingMalformed && attention == .malformed) else { return attention }
+                guard attention == .none || (resettingMalformed && attention == .malformed) else { return (attention, attention == .newerSchema ? "newer_schema_read_only" : "malformed") }
             }
             try data.write(to: url, options: .atomic)
-            return .none
+            return (.none, "persisted")
         } catch {
-            return .saveFailed
+            return (.saveFailed, "write_failed")
         }
     }
 }

@@ -50,7 +50,7 @@ final class TracePipeline: @unchecked Sendable {
     private var nextInputSequence: UInt64 = 0
     private var totalDropped: UInt64 = 0
     // Noncallback lifecycle is a bounded fixed ring; callback lifecycle uses the SPSC ring.
-    private var lifecycleQueue = [UInt8](repeating: 0, count: 16)
+    private var lifecycleQueue = [[String: Any]?](repeating: nil, count: 16)
     private var lifecycleRead = 0, lifecycleWrite = 0, lifecycleCount = 0
     private var stopping = false
     private var closed = false
@@ -97,12 +97,12 @@ final class TracePipeline: @unchecked Sendable {
     deinit { ring?.deallocate() }
 
     // One event-tap producer; atomic push never locks or blocks.
-    func enqueue(horizontal: Int64, vertical: Int64, granularity: UInt8, decision: UInt8, outcome: UInt8, reason: UInt8, extractionNS: UInt64, rustNS: UInt64, applyNS: UInt64, totalNS: UInt64, tNS: UInt64, kind: UInt8 = 0) {
+    func enqueue(horizontal: Int64, vertical: Int64, granularity: UInt8, decision: UInt8, outcome: UInt8, reason: UInt8, extractionNS: UInt64, rustNS: UInt64, applyNS: UInt64, totalNS: UInt64, tNS: UInt64, kind: UInt8 = 0, configRevision: UInt64? = nil) {
         // Input sequence is assigned at native receive, before queue admission.
         if kind == 0 { nextInputSequence &+= 1 }
         let inputSequence = kind == 0 ? nextInputSequence : 0
         nextSequence &+= 1
-        var record = mmf_trace_record(kind: kind, granularity: granularity, decision: decision, outcome: outcome, reason: reason, sequence: nextSequence, input_sequence: inputSequence, t_ns: tNS - started, extraction_ns: extractionNS, rust_ns: rustNS, apply_ns: applyNS, total_ns: totalNS, horizontal: horizontal, vertical: vertical)
+        var record = mmf_trace_record(kind: kind, granularity: granularity, decision: decision, outcome: outcome, reason: reason, sequence: nextSequence, input_sequence: inputSequence, config_revision: configRevision ?? UInt64.max, t_ns: tNS - started, extraction_ns: extractionNS, rust_ns: rustNS, apply_ns: applyNS, total_ns: totalNS, horizontal: horizontal, vertical: vertical)
         if mmf_trace_ring_push(ring!, &record) != 0 { available.signal() }
     }
 
@@ -131,9 +131,16 @@ final class TracePipeline: @unchecked Sendable {
             _ = available.wait(timeout: .now() + 1)
             while true {
                 let (record, losses, shouldStop) = take()
-                if record == nil, let reason = takeLifecycle() {
-                    let lifecycle = mmf_trace_record(kind: 1, granularity: 0, decision: 0, outcome: 0, reason: reason, sequence: 0, input_sequence: 0, t_ns: DispatchTime.now().uptimeNanoseconds - started, extraction_ns: 0, rust_ns: 0, apply_ns: 0, total_ns: 0, horizontal: 0, vertical: 0)
-                    writeLifecycle(lifecycle, &handle, &index, &segmentBytes, &sinkFailed)
+                if record == nil, var lifecycle = takeLifecycle() {
+                    nextPublishSequence &+= 1
+                    lifecycle["seq"] = nextPublishSequence
+                    write(lifecycle, &handle, &index, &segmentBytes, &sinkFailed)
+                    let name = lifecycle["name"] as? String ?? "writer_failed"
+                    switch lifecycle["level"] as? String {
+                    case "error": logger.error("trace \(name, privacy: .public)")
+                    case "warn": logger.warning("trace \(name, privacy: .public)")
+                    default: logger.info("trace \(name, privacy: .public)")
+                    }
                     continue
                 }
                 if shouldStop {
@@ -148,7 +155,7 @@ final class TracePipeline: @unchecked Sendable {
                 if losses > 0 { writeDrop(losses, &handle, &index, &segmentBytes, &sinkFailed) }
                 nextPublishSequence &+= 1
                 if record.kind == 0 {
-                    write(["schema_version": 1, "run_id": runID, "seq": nextPublishSequence, "t_ns": record.t_ns, "level": "trace", "component": "native.input", "name": "input.pipeline", "input_seq": record.input_sequence, "horizontal_lines": record.horizontal, "vertical_lines": record.vertical, "granularity": record.granularity == 1 ? "line_based" : "pixel_based", "decision": decisionName(record.decision), "native_outcome": outcomeName(record.outcome), "reason_code": reasonName(record.reason), "config_revision": NSNull(), "extraction_ns": record.extraction_ns, "rust_eval_ns": record.rust_ns, "native_apply_ns": record.apply_ns, "total_ns": record.total_ns], &handle, &index, &segmentBytes, &sinkFailed)
+                    write(["schema_version": 1, "run_id": runID, "seq": nextPublishSequence, "t_ns": record.t_ns, "level": "trace", "component": "native.input", "name": "input.pipeline", "input_seq": record.input_sequence, "horizontal_lines": record.horizontal, "vertical_lines": record.vertical, "granularity": record.granularity == 1 ? "line_based" : "pixel_based", "decision": decisionName(record.decision), "native_outcome": outcomeName(record.outcome), "reason_code": reasonName(record.reason), "config_revision": record.config_revision == UInt64.max ? NSNull() : record.config_revision as Any, "extraction_ns": record.extraction_ns, "rust_eval_ns": record.rust_ns, "native_apply_ns": record.apply_ns, "total_ns": record.total_ns], &handle, &index, &segmentBytes, &sinkFailed)
                 } else { writeLifecycle(record, &handle, &index, &segmentBytes, &sinkFailed) }
             }
         }
@@ -167,17 +174,26 @@ final class TracePipeline: @unchecked Sendable {
     }
     // Publish order is drain serialization order; cross-thread causal order is intentionally not claimed.
     func lifecycle(_ reason: UInt8) {
+        enqueueLifecycle(["level": lifecycleLevel(reason), "component": "lifecycle", "name": lifecycleName(reason)])
+    }
+    func configuration(_ name: String, operationID: UUID, oldRevision: UInt64?, newRevision: UInt64?, configuration: PersistedConfiguration, result: String) {
+        enqueueLifecycle(["level": "info", "component": "configuration", "name": name, "operation_id": operationID.uuidString, "old_config_revision": oldRevision as Any? ?? NSNull(), "new_config_revision": newRevision as Any? ?? NSNull(), "line_amount_percent": configuration.amountPercent, "line_direction": configuration.direction.rawValue, "enabled": configuration.enabled, "result_code": result])
+    }
+    private func enqueueLifecycle(_ fields: [String: Any]) {
         lock.lock(); defer { lock.unlock() }
-        guard lifecycleCount < lifecycleQueue.count else { totalDropped &+= 1; return }
-        lifecycleQueue[lifecycleWrite] = reason; lifecycleWrite = (lifecycleWrite + 1) % lifecycleQueue.count; lifecycleCount += 1; available.signal()
+        guard !closed, lifecycleCount < lifecycleQueue.count else { totalDropped &+= 1; return }
+        var record = fields
+        record["schema_version"] = 1; record["run_id"] = runID
+        record["t_ns"] = DispatchTime.now().uptimeNanoseconds - started
+        lifecycleQueue[lifecycleWrite] = record; lifecycleWrite = (lifecycleWrite + 1) % lifecycleQueue.count; lifecycleCount += 1; available.signal()
     }
     func callbackLifecycle(_ reason: UInt8) {
         enqueue(horizontal: 0, vertical: 0, granularity: 0, decision: 0, outcome: 0, reason: reason, extractionNS: 0, rustNS: 0, applyNS: 0, totalNS: 0, tNS: DispatchTime.now().uptimeNanoseconds, kind: 1)
     }
-    private func takeLifecycle() -> UInt8? {
+    private func takeLifecycle() -> [String: Any]? {
         lock.lock(); defer { lock.unlock() }
         guard lifecycleCount > 0 else { return nil }
-        let reason = lifecycleQueue[lifecycleRead]; lifecycleRead = (lifecycleRead + 1) % lifecycleQueue.count; lifecycleCount -= 1; return reason
+        let record = lifecycleQueue[lifecycleRead]; lifecycleQueue[lifecycleRead] = nil; lifecycleRead = (lifecycleRead + 1) % lifecycleQueue.count; lifecycleCount -= 1; return record
     }
     private func writeDrop(_ losses: UInt64, _ handle: inout FileHandle?, _ index: inout Int, _ bytes: inout Int, _ failed: inout Bool) {
         nextPublishSequence &+= 1
