@@ -171,7 +171,10 @@ private struct ScrollingPane: View {
                     Slider(value: Binding(
                         get: { ScrollAmountScale.position(for: pendingAmount ?? runtime.configuration.amountPercent) },
                         set: { stageAmount(ScrollAmountScale.percent(at: $0)) }
-                    ), in: -2...2, onEditingChanged: { isEditingAmount = $0 }) {
+                    ), in: -2...2, onEditingChanged: { editing in
+                        isEditingAmount = editing
+                        if !editing && NSApp.currentEvent?.type == .leftMouseUp { commitPendingAmount() }
+                    }) {
                         Text("Scroll Amount")
                     }
                     .labelsHidden()
@@ -202,7 +205,7 @@ private struct ScrollingPane: View {
                 } else if runtime.migrationFailed {
                     Text("Your saved settings could not be updated. Scrolling changes are off and your saved settings are unchanged. Quit and reopen MacMouseFlow to try again.")
                 } else if runtime.configurationAttention == .saveFailed {
-                    Text("Your changes could not be saved. Your previous settings are still in use. Adjust Scroll Amount or reset it to try again.")
+                    Text("Your changes could not be saved. Your previous settings are still in use.")
                 }
             }
             Section("What changes") {
