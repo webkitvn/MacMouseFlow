@@ -43,6 +43,7 @@ let package = Package(
         .executableTarget(name: "Smoke", dependencies: ["Platform"], path: "Platform/Sources/RuntimeSmoke"),
         .executableTarget(name: "Benchmark", dependencies: ["Platform", "Bridge"], path: "Platform/Sources/RuntimeBenchmark"),
         .testTarget(name: "PlatformTests", dependencies: ["Platform"], path: "Platform/Tests/PlatformTests"),
+        .testTarget(name: "AppTests", dependencies: ["App"], path: "App/Tests/AppTests"),
     ],
     swiftLanguageVersions: [.version("6"), .v5]
 )
