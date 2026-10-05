@@ -128,6 +128,17 @@ private struct RuntimeStatus: View {
     }
 }
 
+// Track distance represents equal ratios: 25, 50, 100, 200, 400.
+enum ScrollAmountScale {
+    static func position(for percent: UInt32) -> Double {
+        log2(Double(percent) / 100)
+    }
+
+    static func percent(at position: Double) -> UInt32 {
+        UInt32((100 * exp2(min(2, max(-2, position)))).rounded())
+    }
+}
+
 private struct ScrollingPane: View {
     @ObservedObject var runtime: InputRuntime
 
@@ -147,6 +158,30 @@ private struct ScrollingPane: View {
                     Text("Reverse").tag(ScrollDirection.reverse)
                 }
                 .disabled(!runtime.canEditConfiguration)
+                VStack(alignment: .leading) {
+                    HStack {
+                        Text("Scroll Amount")
+                        Spacer()
+                        Text("\(runtime.configuration.amountPercent)%")
+                            .monospacedDigit()
+                    }
+                    Slider(value: Binding(
+                        get: { ScrollAmountScale.position(for: runtime.configuration.amountPercent) },
+                        set: { runtime.setAmountPercent(ScrollAmountScale.percent(at: $0)) }
+                    ), in: -2...2) {
+                        Text("Scroll Amount")
+                    }
+                    .labelsHidden()
+                    .accessibilityValue("\(runtime.configuration.amountPercent) percent")
+                    .disabled(!runtime.canEditConfiguration)
+                    Text("Lower amounts move less for the same line-based input; higher amounts move more. At 100%, the amount is unchanged.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if runtime.configuration.amountPercent != 100 {
+                        Button("Reset to 100%") { runtime.setAmountPercent(100) }
+                            .disabled(!runtime.canEditConfiguration)
+                    }
+                }
                 if runtime.configurationAttention == .malformed {
                     Text("Your configuration could not be read. Changes are disabled until you reset it.")
                     Button("Reset Configuration") { runtime.resetMalformedConfiguration() }
