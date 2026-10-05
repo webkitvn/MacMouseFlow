@@ -141,6 +141,9 @@ enum ScrollAmountScale {
 
 private struct ScrollingPane: View {
     @ObservedObject var runtime: InputRuntime
+    @State private var pendingAmount: UInt32?
+    @State private var isEditingAmount = false
+    @State private var amountSaved = false
 
     var body: some View {
         Form {
@@ -166,20 +169,29 @@ private struct ScrollingPane: View {
                             .monospacedDigit()
                     }
                     Slider(value: Binding(
-                        get: { ScrollAmountScale.position(for: runtime.configuration.amountPercent) },
-                        set: { runtime.setAmountPercent(ScrollAmountScale.percent(at: $0)) }
-                    ), in: -2...2) {
+                        get: { ScrollAmountScale.position(for: pendingAmount ?? runtime.configuration.amountPercent) },
+                        set: { stageAmount(ScrollAmountScale.percent(at: $0)) }
+                    ), in: -2...2, onEditingChanged: { isEditingAmount = $0 }) {
                         Text("Scroll Amount")
                     }
                     .labelsHidden()
-                    .accessibilityValue("\(runtime.configuration.amountPercent) percent")
+                    .accessibilityValue(pendingAmount.map { "\($0) percent, not saved. Unchanged amount: \(runtime.configuration.amountPercent) percent" } ?? "\(runtime.configuration.amountPercent) percent")
                     .disabled(!runtime.canEditConfiguration)
                     Text("Lower amounts move less for the same line-based input; higher amounts move more. At 100%, the amount is unchanged.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    if runtime.configuration.amountPercent != 100 {
-                        Button("Reset to 100%") { runtime.setAmountPercent(100) }
-                            .disabled(!runtime.canEditConfiguration)
+                    if let pendingAmount {
+                        Text("\(pendingAmount)% — not saved yet. Unchanged amount: \(runtime.configuration.amountPercent)%.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else if amountSaved && runtime.configurationAttention == .none {
+                        Text("Scroll Amount saved.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    if (pendingAmount ?? runtime.configuration.amountPercent) != 100 {
+                        Button("Reset to 100%") { stageAmount(100) }
+                            .disabled(!runtime.canEditConfiguration || isEditingAmount)
                     }
                 }
                 if runtime.configurationAttention == .malformed {
@@ -190,7 +202,7 @@ private struct ScrollingPane: View {
                 } else if runtime.migrationFailed {
                     Text("Your saved settings could not be updated. Scrolling changes are off and your saved settings are unchanged. Quit and reopen MacMouseFlow to try again.")
                 } else if runtime.configurationAttention == .saveFailed {
-                    Text("Your changes could not be saved. Your previous settings are still in use.")
+                    Text("Your changes could not be saved. Your previous settings are still in use. Adjust Scroll Amount or reset it to try again.")
                 }
             }
             Section("What changes") {
@@ -203,6 +215,32 @@ private struct ScrollingPane: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Scrolling")
+        .task(id: isEditingAmount ? nil : pendingAmount) {
+            guard !isEditingAmount, pendingAmount != nil else { return }
+            do {
+                // Batch keyboard adjustments; dragging waits for the native editing-end callback.
+                try await Task.sleep(for: .milliseconds(250))
+            } catch { return }
+            guard !Task.isCancelled else { return }
+            commitPendingAmount()
+        }
+        .onDisappear {
+            isEditingAmount = false
+            commitPendingAmount()
+        }
+    }
+
+    private func commitPendingAmount() {
+        guard let amount = pendingAmount else { return }
+        pendingAmount = nil
+        let previousAmount = runtime.configuration.amountPercent
+        runtime.setAmountPercent(amount)
+        amountSaved = previousAmount != amount && runtime.configuration.amountPercent == amount && runtime.configurationAttention == .none
+    }
+
+    private func stageAmount(_ amount: UInt32) {
+        amountSaved = false
+        pendingAmount = amount == runtime.configuration.amountPercent ? nil : amount
     }
 }
 
