@@ -117,6 +117,15 @@ final class TracePipeline: @unchecked Sendable {
         _ = drained.wait(timeout: .distantFuture)
     }
 
+    func cleanShutdown() -> Bool {
+        guard let data = try? Data(contentsOf: destination.appendingPathComponent("manifest.json")),
+              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return manifest["clean_shutdown"] as? Bool == true
+            && manifest["drop_count"] as? Int == 0
+            && manifest["writer_failed"] as? Bool == false
+    }
+
     private func take() -> (mmf_trace_record?, UInt64, Bool) {
         var record = mmf_trace_record()
         let popped = mmf_trace_ring_pop(ring!, &record) != 0

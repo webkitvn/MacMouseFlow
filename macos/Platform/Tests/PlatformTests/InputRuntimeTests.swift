@@ -47,6 +47,27 @@ final class InputRuntimeTests: XCTestCase {
             }
         }
         let failure = ProcessInfo.processInfo.environment["MMF_TEST_TAP_FAILURE"] != nil
+        let stalledSink = ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL"] != nil
+        if stalledSink {
+            let started = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_STARTED"])
+            let callbacksDone = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_CALLBACKS_DONE"])
+            let release = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_RELEASE"])
+            let summary = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_SUMMARY"])
+            waitFor { FileManager.default.fileExists(atPath: started) }
+            waitFor { FileManager.default.fileExists(atPath: callbacksDone) }
+            XCTAssertEqual(try String(contentsOf: fixture.appendingPathComponent("native.txt"), encoding: .utf8), "-13700 -13700\n")
+            XCTAssertEqual(try String(contentsOfFile: summary, encoding: .utf8), "140000 0\n")
+            waitFor { FileManager.default.fileExists(atPath: release) }
+            subject = nil
+            waitFor {
+                let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
+                return runs.contains { run in
+                    guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+                    return manifest["clean_shutdown"] as? Bool == true && manifest["writer_failed"] as? Bool == false && (manifest["drop_count"] as? Int ?? 0) > 0
+                }
+            }
+            return
+        }
         if failure {
             waitFor { records().contains { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "unavailable" } }
             subject?.setAmountPercent(25)
@@ -70,6 +91,11 @@ final class InputRuntimeTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: store.url), bytes)
             let previousInputs = records().filter { $0["name"] as? String == "input.pipeline" }.count
             waitFor { records().filter { $0["name"] as? String == "input.pipeline" }.count > previousInputs }
+            subject?.setEnabled(false)
+            waitFor { records().contains { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "disabled" && $0["enabled"] as? Bool == false } }
+            let inputsAfterDisable = records().filter { $0["name"] as? String == "input.pipeline" }.count
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            XCTAssertEqual(records().filter { $0["name"] as? String == "input.pipeline" }.count, inputsAfterDisable)
         }
         subject = nil
         waitFor {

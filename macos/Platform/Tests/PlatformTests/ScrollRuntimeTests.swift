@@ -127,6 +127,26 @@ final class ScrollRuntimeTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("exported/manifest.json").path))
     }
 
+    func testUnavailableTraceFailsEvidenceButPreservesInput() throws {
+        let oldTrace = getenv("MMF_TRACE").map { String(cString: $0) }
+        let oldDirectory = getenv("MMF_TRACE_DIR").map { String(cString: $0) }
+        setenv("MMF_TRACE", "1", 1)
+        setenv("MMF_TRACE_DIR", "/dev/null", 1)
+        defer {
+            if let oldTrace { setenv("MMF_TRACE", oldTrace, 1) } else { unsetenv("MMF_TRACE") }
+            if let oldDirectory { setenv("MMF_TRACE_DIR", oldDirectory, 1) } else { unsetenv("MMF_TRACE_DIR") }
+        }
+        let engine = try XCTUnwrap(PointerInputEngine())
+        XCTAssertTrue(engine.setDirection(.reverse, amountPercent: 137))
+        let callback = CallbackHarness(engine: engine)
+        let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: 100, wheel2: -100, wheel3: 0))
+        callback.invoke(.scrollWheel, event: event)
+        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventDeltaAxis1), -137)
+        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventDeltaAxis2), 137)
+        callback.close()
+        XCTAssertFalse(callback.cleanTraceShutdown())
+    }
+
     func testConcurrentEngineCreationRetriesBusy() {
         let workers = 8
         let ready = DispatchGroup()
