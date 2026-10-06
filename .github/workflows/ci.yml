@@ -47,7 +47,7 @@ jobs:
           for path in "${changed[@]}"; do
             echo "changed: $path"
             case "$path" in
-              README.md|docs/*.md)
+              AGENTS.md|README.md|docs/*.md)
                 ;;
               *)
                 run_full=true
