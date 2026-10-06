@@ -32,6 +32,10 @@ Use the smallest tool that can resolve the current task.
 - Prototype: use for unresolved feasibility; prototypes are disposable evidence, not production foundations.
 - TDD, tests, and mocking: use established public seams; mock only established system boundaries. Do not invent production abstractions solely for testability.
 
+### Computer use
+
+Computer-use tools may inspect and control macOS apps and browsers when needed for the active task. Prefer CLI/API tools when sufficient. Verify the target window/tab before acting and confirm the result afterward. Reuse user-owned sessions only with permission; do not disrupt another agent's session. Ask before destructive or out-of-scope actions. Oracle-specific browser rules still apply.
+
 ### Oracle
 
 Use Oracle only for material second-model review, architecture/design uncertainty, or an explicit review requirement. Treat its output as advisory and verify material conclusions against repository evidence and tests.
