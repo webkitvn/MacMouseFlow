@@ -105,7 +105,11 @@ final class InputRuntimeTests: XCTestCase {
             setenv("MMF_TRACE", "1", 1)
             var subject: InputRuntime? = InputRuntime(store: store)
             XCTAssertEqual(subject?.configuration.amountPercent, result == "loaded" ? 137 : 100)
-            if result == "migration_failed" { XCTAssertTrue(subject?.migrationFailed == true) }
+            XCTAssertEqual(subject?.hasCommittedConfiguration, result == "loaded" || result == "migrated")
+            if result == "migration_failed" {
+                XCTAssertTrue(subject?.migrationFailed == true)
+                XCTAssertFalse(subject?.canEditConfiguration == true)
+            }
             subject = nil
             if readOnly { try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: configDirectory.path) }
             if result != "migrated" { XCTAssertEqual(try Data(contentsOf: store.url), source) }
@@ -198,6 +202,29 @@ final class InputRuntimeTests: XCTestCase {
         XCTAssertEqual(export.terminationStatus, 0)
     }
 
+    func testFreshDefaultsAndMalformedRepairHaveDistinctProvenance() throws {
+        let store = ConfigurationStore(directory: directory)
+        let fresh = InputRuntime(store: store)
+        XCTAssertEqual(fresh.configuration, .default)
+        XCTAssertTrue(fresh.hasCommittedConfiguration)
+        XCTAssertTrue(fresh.canEditConfiguration)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.url.path))
+
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("broken JSON".utf8).write(to: store.url)
+        let malformed = InputRuntime(store: store)
+        XCTAssertEqual(malformed.configuration, .default)
+        XCTAssertFalse(malformed.hasCommittedConfiguration)
+        XCTAssertFalse(malformed.canEditConfiguration)
+        malformed.setAmountPercent(137)
+        XCTAssertFalse(malformed.hasCommittedConfiguration)
+        malformed.resetMalformedConfiguration()
+        XCTAssertEqual(malformed.configuration, .default)
+        XCTAssertTrue(malformed.hasCommittedConfiguration)
+        XCTAssertTrue(malformed.canEditConfiguration)
+        XCTAssertEqual(store.load().0, .default)
+    }
+
     func testLoadedAmountSurvivesRefreshAndExistingControls() throws {
         let store = ConfigurationStore(directory: directory)
         XCTAssertTrue(store.persist(.init(enabled: false, direction: .reverse, amountPercent: 137)))
@@ -237,6 +264,7 @@ final class InputRuntimeTests: XCTestCase {
             runtime.setAmountPercent(amount)
             XCTAssertEqual(runtime.configuration, committed)
             XCTAssertEqual(runtime.configurationAttention, .saveFailed)
+            XCTAssertTrue(runtime.hasCommittedConfiguration)
             XCTAssertEqual(try Data(contentsOf: store.url), bytes)
         }
         runtime.setAmountPercent(25)
@@ -281,6 +309,7 @@ final class InputRuntimeTests: XCTestCase {
                 }
                 XCTAssertEqual(runtime.configuration, committed)
                 XCTAssertEqual(runtime.configurationAttention, .newerSchema)
+                XCTAssertTrue(runtime.hasCommittedConfiguration)
                 XCTAssertEqual(runtime.state, .configurationNeedsAttention)
                 XCTAssertFalse(runtime.canEditConfiguration)
                 runtime.setAmountPercent(25)
@@ -336,8 +365,10 @@ final class InputRuntimeTests: XCTestCase {
         let runtime = InputRuntime(store: store)
         let bytes = Data(#"{"schema_version":3,"future":true}"#.utf8)
         try bytes.write(to: store.url)
+        XCTAssertFalse(runtime.hasCommittedConfiguration)
         runtime.resetMalformedConfiguration()
         XCTAssertEqual(runtime.configuration, .default)
+        XCTAssertFalse(runtime.hasCommittedConfiguration)
         XCTAssertEqual(runtime.configurationAttention, .newerSchema)
         XCTAssertFalse(runtime.canEditConfiguration)
         XCTAssertEqual(try Data(contentsOf: store.url), bytes)
@@ -360,11 +391,13 @@ final class InputRuntimeTests: XCTestCase {
                 }
                 XCTAssertEqual(runtime.configuration, committed)
                 XCTAssertEqual(runtime.configurationAttention, .malformed)
+                XCTAssertTrue(runtime.hasCommittedConfiguration)
                 XCTAssertFalse(runtime.canEditConfiguration)
                 XCTAssertNotEqual(runtime.state, .active)
                 XCTAssertEqual(try Data(contentsOf: store.url), bytes)
                 runtime.resetMalformedConfiguration()
                 XCTAssertEqual(runtime.configuration, .default)
+                XCTAssertTrue(runtime.hasCommittedConfiguration)
                 XCTAssertEqual(runtime.configurationAttention, .none)
                 XCTAssertEqual(store.load().0, .default)
             }
