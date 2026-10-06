@@ -20,6 +20,7 @@ public enum InputRuntimeState: Equatable {
 public final class InputRuntime: ObservableObject {
     @Published public private(set) var state: InputRuntimeState = .off
     @Published public private(set) var configuration: PersistedConfiguration
+    @Published public private(set) var hasCommittedConfiguration: Bool
     @Published public private(set) var configurationAttention: ConfigurationAttention
     @Published public private(set) var isSaving = false
 
@@ -40,6 +41,8 @@ public final class InputRuntime: ObservableObject {
         lifecycle = LifecycleExecutor(trace: trace)
         let loaded = store.loadOutcome()
         configuration = loaded.configuration
+        // A missing file selects the supported fresh defaults, not an unreadable fallback.
+        hasCommittedConfiguration = loaded.attention == .none
         configurationAttention = loaded.attention
         migrationFailed = loaded.result == "migration_failed"
         trace?.configuration("config.load", operationID: operationID, oldRevision: nil, newRevision: loaded.attention == .none ? revision : nil, configuration: configuration, result: loaded.result)
@@ -94,6 +97,7 @@ public final class InputRuntime: ObservableObject {
         operationID = operation
         previousRevision = revision
         configuration = candidate
+        hasCommittedConfiguration = true
         configurationAttention = .none
         revision &+= 1
         runtimeStatus = .unavailable

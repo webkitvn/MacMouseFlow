@@ -120,9 +120,23 @@ private struct RuntimeStatus: View {
     let state: InputRuntimeState
 
     var body: some View {
-        LabeledContent("Current status") {
-            Label(state.userLabel, systemImage: state.symbol)
-                .foregroundStyle(state == .active ? .green : .secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent("Current status") {
+                Label(state.userLabel, systemImage: state.symbol)
+                    .foregroundStyle(state == .active ? .green : .secondary)
+            }
+            switch state {
+            case .off:
+                Text("Scrolling changes are off.")
+            case .needsAccessibilityAccess:
+                Text("Scrolling changes are not being applied. You can save settings now; grant Accessibility access in Access to use them.")
+            case .inputUnavailable:
+                Text("Scrolling changes are not being applied. Your saved settings are unchanged, and you can still edit them.")
+            case .configurationNeedsAttention:
+                Text("Scrolling changes are not being applied. Review your configuration in Scrolling.")
+            case .active:
+                EmptyView()
+            }
         }
         .font(.subheadline)
     }
@@ -145,6 +159,11 @@ private struct ScrollingPane: View {
     @State private var isEditingAmount = false
     @State private var amountSaved = false
 
+    private var hasReadableAmount: Bool { runtime.hasCommittedConfiguration }
+    private var isRetainingAmount: Bool {
+        hasReadableAmount && (runtime.configurationAttention == .malformed || runtime.configurationAttention == .newerSchema)
+    }
+
     var body: some View {
         Form {
             Section("Line-Based Scrolling") {
@@ -163,36 +182,43 @@ private struct ScrollingPane: View {
                 .disabled(!runtime.canEditConfiguration)
                 VStack(alignment: .leading) {
                     HStack {
-                        Text("Scroll Amount")
+                        Text(isRetainingAmount ? "Scroll Amount (last committed)" : "Scroll Amount")
                         Spacer()
-                        Text("\(runtime.configuration.amountPercent)%")
-                            .monospacedDigit()
+                        if hasReadableAmount {
+                            Text("\(runtime.configuration.amountPercent)%")
+                                .monospacedDigit()
+                        } else {
+                            Text("Unavailable")
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    Slider(value: Binding(
-                        get: { ScrollAmountScale.position(for: pendingAmount ?? runtime.configuration.amountPercent) },
-                        set: { stageAmount(ScrollAmountScale.percent(at: $0)) }
-                    ), in: -2...2, onEditingChanged: { editing in
-                        isEditingAmount = editing
-                        if !editing && NSApp.currentEvent?.type == .leftMouseUp { commitPendingAmount() }
-                    }) {
-                        Text("Scroll Amount")
+                    if hasReadableAmount && !isRetainingAmount {
+                        Slider(value: Binding(
+                            get: { ScrollAmountScale.position(for: pendingAmount ?? runtime.configuration.amountPercent) },
+                            set: { stageAmount(ScrollAmountScale.percent(at: $0)) }
+                        ), in: -2...2, onEditingChanged: { editing in
+                            isEditingAmount = editing
+                            if !editing && NSApp.currentEvent?.type == .leftMouseUp { commitPendingAmount() }
+                        }) {
+                            Text("Scroll Amount")
+                        }
+                        .labelsHidden()
+                        .accessibilityValue(pendingAmount.map { "\($0) percent, not saved. Unchanged amount: \(runtime.configuration.amountPercent) percent" } ?? "\(runtime.configuration.amountPercent) percent")
+                        .disabled(!runtime.canEditConfiguration)
                     }
-                    .labelsHidden()
-                    .accessibilityValue(pendingAmount.map { "\($0) percent, not saved. Unchanged amount: \(runtime.configuration.amountPercent) percent" } ?? "\(runtime.configuration.amountPercent) percent")
-                    .disabled(!runtime.canEditConfiguration)
                     Text("Lower amounts move less for the same line-based input; higher amounts move more. At 100%, the amount is unchanged.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    if let pendingAmount {
+                    if hasReadableAmount && !isRetainingAmount, let pendingAmount {
                         Text("\(pendingAmount)% — not saved yet. Unchanged amount: \(runtime.configuration.amountPercent)%.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                    } else if amountSaved && runtime.configurationAttention == .none {
+                    } else if hasReadableAmount && amountSaved && runtime.configurationAttention == .none {
                         Text("Scroll Amount saved.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    if (pendingAmount ?? runtime.configuration.amountPercent) != 100 {
+                    if hasReadableAmount && !isRetainingAmount && (pendingAmount ?? runtime.configuration.amountPercent) != 100 {
                         Button("Reset to 100%") { stageAmount(100) }
                             .disabled(!runtime.canEditConfiguration || isEditingAmount)
                     }
@@ -209,7 +235,7 @@ private struct ScrollingPane: View {
                 }
             }
             Section("What changes") {
-                Text("During this session, the runtime monitors eligible line-based scroll input.")
+                Text("When active, MacMouseFlow applies your direction and amount settings to line-based scrolling.")
                 Text("Continuous pixel-based scrolling is preserved.")
                 Text("MacMouseFlow does not identify individual pointing devices.")
                     .font(.footnote)
