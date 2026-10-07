@@ -95,9 +95,12 @@ class RuntimeTraceBundleTests(unittest.TestCase):
     def test_stalled_trace_sink_drops_diagnostics_without_blocking_input(self):
         self.assert_stalled_trace_sink(False)
 
-    def test_stalled_trace_sink_rejects_early_callback_corruption(self):
-        with self.assertRaises(AssertionError):
-            self.assert_stalled_trace_sink(True)
+    def test_stalled_trace_sink_reports_early_callback_corruption(self):
+        result = self.assert_stalled_trace_sink(True)
+        self.assertEqual(result["summary"], "140000 139999\n")
+        self.assertTrue(result["callbacks_done"])
+        self.assertEqual(result["returncode"], 1)
+        self.assertIn("140000 0", result["output"])
 
     def assert_stalled_trace_sink(self, corrupt):
         with tempfile.TemporaryDirectory() as temporary:
@@ -120,14 +123,24 @@ class RuntimeTraceBundleTests(unittest.TestCase):
                     time.sleep(0.01)
                 self.assertTrue(paths["started"].exists())
                 self.assertTrue(paths["callbacks-done"].exists())
-                self.assertEqual(paths["summary"].read_text(), "140000 0\n")
+                summary = paths["summary"].read_text()
                 paths["release"].touch()
                 stdout, stderr = process.communicate(timeout=20)
             finally:
                 if process.poll() is None:
                     process.kill()
                     stdout, stderr = process.communicate()
-            self.assertEqual(process.returncode, 0, stdout + stderr)
+            manifests = list((fixture / "traces").glob("*/manifest.json"))
+            manifest = json.loads(manifests[0].read_text()) if len(manifests) == 1 else None
+            result = {"callbacks_done": paths["callbacks-done"].exists(), "summary": summary, "returncode": process.returncode, "output": stdout + stderr, "manifest": manifest}
+            if not corrupt:
+                self.assertEqual(result["summary"], "140000 0\n")
+                self.assertEqual(result["returncode"], 0, result["output"])
+                self.assertIsNotNone(result["manifest"])
+                self.assertTrue(result["manifest"]["clean_shutdown"], result["output"])
+                self.assertFalse(result["manifest"]["writer_failed"], result["output"])
+                self.assertGreater(result["manifest"]["drop_count"], 0, result["output"])
+            return result
 
     def test_runtime_benchmark_fails_when_requested_trace_cannot_start(self):
         for trace in ("1", None):

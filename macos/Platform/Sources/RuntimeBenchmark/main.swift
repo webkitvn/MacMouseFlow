@@ -64,13 +64,13 @@ let sequence = (0..<eventCount).map { index -> WorkItem in
     index.isMultiple(of: 10) ? pixelItem : enabled[index % enabled.count]
 }
 
-@MainActor func matches(_ event: CGEvent, before: CFData?, expected: (horizontal: Int64, vertical: Int64)?) -> Bool {
+func matches(_ event: CGEvent, before: CFData?, expected: (horizontal: Int64, vertical: Int64)?) -> Bool {
     guard let expected else { return event.data == before }
     return abs(event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2) - Double(expected.horizontal) / 100) < 1 / 65_536
         && abs(event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1) - Double(expected.vertical) / 100) < 1 / 65_536
 }
 
-@MainActor func verify(_ item: WorkItem) -> Bool {
+func verify(_ item: WorkItem, callback: CallbackHarness) -> Bool {
     guard callback.setConfiguration(item.direction, amountPercent: item.amount) else { return false }
     let event = item.event.copy()!
     let before = event.data
@@ -79,14 +79,14 @@ let sequence = (0..<eventCount).map { index -> WorkItem in
 }
 
 for (index, item) in enabled.enumerated() {
-    guard verify(item) else { fputs("benchmark workload expectation failed at item \(index)\n", stderr); exit(1) }
+    guard verify(item, callback: callback) else { fputs("benchmark workload expectation failed at item \(index)\n", stderr); exit(1) }
 }
 guard callback.setConfiguration(.reverse, amountPercent: 400) else { exit(1) }
 let pixelBefore = pixelItem.event.data
 callback.invoke(.scrollWheel, event: pixelItem.event)
 guard pixelItem.event.data == pixelBefore else { fputs("pixel preservation failed\n", stderr); exit(1) }
 for _ in 0..<warmupCount {
-    guard verify(enabled[0]) else { exit(1) }
+    guard verify(enabled[0], callback: callback) else { exit(1) }
 }
 var abiSamples = [UInt64](repeating: 0, count: eventCount)
 var callbackSamples = [UInt64](repeating: 0, count: eventCount)
@@ -109,7 +109,7 @@ for index in sequence.indices {
     guard matches(event, before: before, expected: item.expected) else { fputs("benchmark decision diverged\n", stderr); exit(1) }
 }
 
-guard eventCount < defaultCount || amountUpdates >= 1_000 else { fputs("benchmark requires at least 1000 validated updates\n", stderr); exit(1) }
+guard amountUpdates >= 1_000 else { fputs("benchmark requires at least 1000 validated updates\n", stderr); exit(1) }
 
 func metrics(_ samples: inout [UInt64]) -> (UInt64, UInt64, UInt64) {
     samples.sort()

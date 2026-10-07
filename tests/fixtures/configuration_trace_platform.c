@@ -50,8 +50,11 @@ static void input(CFRunLoopTimerRef timer, void *info) {
     if (!atomic_load(&tap->enabled)) return;
     unsigned events = getenv("MMF_TEST_TRACE_STALL") ? 140000 : 1;
     unsigned mismatches = 0;
+    CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 2, 100, 100);
+    if (!event) return;
     for (unsigned index = 0; index < events; ++index) {
-        CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 2, 100, 100);
+        CGEventSetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1, 100);
+        CGEventSetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2, 100);
         tap->callback((CGEventTapProxy)1, kCGEventScrollWheel, event, tap->info);
         if (getenv("MMF_TEST_TRACE_STALL_CORRUPT_EARLY") && index + 1 < events) {
             CGEventSetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2, 0);
@@ -65,8 +68,8 @@ static void input(CFRunLoopTimerRef timer, void *info) {
             FILE *file = fopen(path, "a");
             if (file) { fprintf(file, "%.0f %.0f\n", horizontal, vertical); fclose(file); }
         }
-        CFRelease(event);
     }
+    CFRelease(event);
     const char *summary = getenv("MMF_TEST_TRACE_STALL_SUMMARY");
     if (summary) { FILE *file = fopen(summary, "w"); if (file) { fprintf(file, "%u %u\n", events, mismatches); fclose(file); } }
     const char *done = getenv("MMF_TEST_TRACE_STALL_CALLBACKS_DONE");
