@@ -37,6 +37,41 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             check=False,
         )
 
+    def test_smoke_lifecycle_and_unavailable_with_system_boundary_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            library = root / "platform.dylib"
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-dynamiclib", str(ROOT / "tests/fixtures/configuration_trace_platform.c"), "-framework", "ApplicationServices", "-o", str(library)], check=True)
+            build_env = {**os.environ, "MMF_FFI_PROFILE": "debug"}
+            subprocess.run(["swift", "build", "--product", "smoke", "--package-path", "macos"], cwd=ROOT, env=build_env, check=True, capture_output=True)
+            binary_path = subprocess.check_output(["swift", "build", "--show-bin-path", "--package-path", "macos"], cwd=ROOT, env=build_env, text=True).strip()
+            env = {**build_env, "DYLD_INSERT_LIBRARIES": str(library), "MMF_TRACE": "1", "MMF_TRACE_DIR": str(root / "traces"), "MMF_SMOKE_SECONDS": "0.05", "MMF_TEST_NATIVE_OUTPUT": str(root / "native.txt")}
+            result = subprocess.run([str(pathlib.Path(binary_path) / "smoke")], cwd=ROOT, env=env, text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("start: stopped/unavailable; tapDisabledByTimeout count: 0", result.stdout)
+            self.assertIn("restart: stopped/unavailable; tapDisabledByTimeout count: 0", result.stdout)
+            self.assertIn("Synthetic gestures are not physical proof", result.stdout)
+            native = (root / "native.txt").read_text().splitlines()
+            self.assertGreaterEqual(len(native), 2)
+            self.assertEqual(set(native), {"-13700 -13700"})
+            manifests = list((root / "traces").glob("*/manifest.json"))
+            self.assertEqual(len(manifests), 2)
+            for path in manifests:
+                manifest = json.loads(path.read_text())
+                self.assertTrue(manifest["clean_shutdown"])
+                self.assertFalse(manifest["writer_failed"])
+                self.assertEqual(manifest["drop_count"], 0)
+                records = [json.loads(line) for segment in path.parent.glob("trace-*.jsonl") for line in segment.read_text().splitlines()]
+                self.assertTrue(any(r["name"] == "input.pipeline" and r["native_outcome"] == "applied" for r in records))
+                self.assertFalse(any(r["name"] == "tap.timeout" for r in records))
+            failure = subprocess.run([str(pathlib.Path(binary_path) / "smoke")], cwd=ROOT, env={**env, "MMF_TEST_TAP_FAILURE": "1"}, text=True, capture_output=True, timeout=15)
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn("CGEventTap startup unavailable", failure.stderr)
+            for invalid in ("0", "61", "nan", "inf", "bad"):
+                result = subprocess.run([str(pathlib.Path(binary_path) / "smoke")], cwd=ROOT, env={**env, "MMF_SMOKE_SECONDS": invalid}, text=True, capture_output=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("MMF_SMOKE_SECONDS must be finite", result.stderr)
+
     def test_configuration_activation_input_and_backoff_export(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -95,6 +130,9 @@ class RuntimeTraceBundleTests(unittest.TestCase):
     def test_stalled_trace_sink_drops_diagnostics_without_blocking_input(self):
         self.assert_stalled_trace_sink(False)
 
+    def test_stalled_trace_sink_slow_drain_uses_parent_completion_bound(self):
+        self.assert_stalled_trace_sink(False, slow_drain=True)
+
     def test_stalled_trace_sink_reports_early_callback_corruption(self):
         result = self.assert_stalled_trace_sink(True)
         self.assertEqual(result["summary"], "140000 139999\n")
@@ -102,7 +140,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
         self.assertEqual(result["returncode"], 1)
         self.assertIn("140000 0", result["output"])
 
-    def assert_stalled_trace_sink(self, corrupt):
+    def assert_stalled_trace_sink(self, corrupt, slow_drain=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             library = root / "platform.dylib"
@@ -113,6 +151,8 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             fixture = root / "stall"; fixture.mkdir()
             paths = {name: fixture / name for name in ("started", "callbacks-done", "release", "summary")}
             env = {**os.environ, "DYLD_INSERT_LIBRARIES": str(library), "MMF_TEST_CONFIGURATION_TRACE_ROOT": str(fixture), "MMF_TEST_NATIVE_OUTPUT": str(fixture / "native.txt"), "MMF_TEST_TRACE_STALL": "1", "MMF_TEST_TRACE_STALL_STARTED": str(paths["started"]), "MMF_TEST_TRACE_STALL_CALLBACKS_DONE": str(paths["callbacks-done"]), "MMF_TEST_TRACE_STALL_RELEASE": str(paths["release"]), "MMF_TEST_TRACE_STALL_SUMMARY": str(paths["summary"]), "MMF_TRACE": "0", **({"MMF_TEST_TRACE_STALL_CORRUPT_EARLY": "1"} if corrupt else {})}
+            if slow_drain:
+                env["MMF_TEST_TRACE_SLOW_DRAIN"] = "1"
             command = [str(pathlib.Path(subprocess.check_output(["xcode-select", "-p"], text=True).strip()) / "usr/bin/xctest"), "-XCTest", "PlatformTests.InputRuntimeTests/testProductionConfigurationActivationAndInputBundle", str(binary.parents[2])]
             process = subprocess.Popen(command, env=env, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout = stderr = ""
