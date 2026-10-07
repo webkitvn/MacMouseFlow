@@ -33,6 +33,7 @@ static void stall_trace_write(int fd, const void *buffer, size_t length) {
     int marker = open(started, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (marker >= 0) close(marker);
     while (access(release, F_OK) != 0) usleep(1000);
+    if (getenv("MMF_TEST_TRACE_SLOW_DRAIN")) usleep(6000000);
     (void)buffer; (void)length;
 }
 

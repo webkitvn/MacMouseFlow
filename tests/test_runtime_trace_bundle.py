@@ -130,6 +130,9 @@ class RuntimeTraceBundleTests(unittest.TestCase):
     def test_stalled_trace_sink_drops_diagnostics_without_blocking_input(self):
         self.assert_stalled_trace_sink(False)
 
+    def test_stalled_trace_sink_slow_drain_uses_parent_completion_bound(self):
+        self.assert_stalled_trace_sink(False, slow_drain=True)
+
     def test_stalled_trace_sink_reports_early_callback_corruption(self):
         result = self.assert_stalled_trace_sink(True)
         self.assertEqual(result["summary"], "140000 139999\n")
@@ -137,7 +140,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
         self.assertEqual(result["returncode"], 1)
         self.assertIn("140000 0", result["output"])
 
-    def assert_stalled_trace_sink(self, corrupt):
+    def assert_stalled_trace_sink(self, corrupt, slow_drain=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             library = root / "platform.dylib"
@@ -148,6 +151,8 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             fixture = root / "stall"; fixture.mkdir()
             paths = {name: fixture / name for name in ("started", "callbacks-done", "release", "summary")}
             env = {**os.environ, "DYLD_INSERT_LIBRARIES": str(library), "MMF_TEST_CONFIGURATION_TRACE_ROOT": str(fixture), "MMF_TEST_NATIVE_OUTPUT": str(fixture / "native.txt"), "MMF_TEST_TRACE_STALL": "1", "MMF_TEST_TRACE_STALL_STARTED": str(paths["started"]), "MMF_TEST_TRACE_STALL_CALLBACKS_DONE": str(paths["callbacks-done"]), "MMF_TEST_TRACE_STALL_RELEASE": str(paths["release"]), "MMF_TEST_TRACE_STALL_SUMMARY": str(paths["summary"]), "MMF_TRACE": "0", **({"MMF_TEST_TRACE_STALL_CORRUPT_EARLY": "1"} if corrupt else {})}
+            if slow_drain:
+                env["MMF_TEST_TRACE_SLOW_DRAIN"] = "1"
             command = [str(pathlib.Path(subprocess.check_output(["xcode-select", "-p"], text=True).strip()) / "usr/bin/xctest"), "-XCTest", "PlatformTests.InputRuntimeTests/testProductionConfigurationActivationAndInputBundle", str(binary.parents[2])]
             process = subprocess.Popen(command, env=env, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout = stderr = ""

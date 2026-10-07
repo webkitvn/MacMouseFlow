@@ -33,8 +33,7 @@ final class InputRuntimeTests: XCTestCase {
         let store = ConfigurationStore(directory: fixture.appendingPathComponent("config"))
         XCTAssertTrue(store.persist(.init(enabled: true, direction: .reverse, amountPercent: 137)))
         var subject: InputRuntime? = InputRuntime(store: store)
-        func waitFor(_ name: String, _ condition: () -> Bool) {
-            let deadline = Date().addingTimeInterval(5)
+        func waitFor(_ name: String, deadline: Date = Date().addingTimeInterval(5), _ condition: () -> Bool) {
             while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
             XCTAssertTrue(condition(), name)
         }
@@ -59,7 +58,8 @@ final class InputRuntimeTests: XCTestCase {
             XCTAssertEqual(try String(contentsOfFile: summary, encoding: .utf8), "140000 0\n")
             waitFor("stalled trace release") { FileManager.default.fileExists(atPath: release) }
             subject = nil
-            waitFor("stalled trace clean drain") {
+            // The Python parent bounds completion after release; draining the finite queue is not a latency gate.
+            waitFor("stalled trace clean drain", deadline: .distantFuture) {
                 let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
                 return runs.contains { run in
                     guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
