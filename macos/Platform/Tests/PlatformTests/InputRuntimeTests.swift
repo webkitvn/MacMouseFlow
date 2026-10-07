@@ -33,10 +33,10 @@ final class InputRuntimeTests: XCTestCase {
         let store = ConfigurationStore(directory: fixture.appendingPathComponent("config"))
         XCTAssertTrue(store.persist(.init(enabled: true, direction: .reverse, amountPercent: 137)))
         var subject: InputRuntime? = InputRuntime(store: store)
-        func waitFor(_ condition: () -> Bool) {
+        func waitFor(_ name: String, _ condition: () -> Bool) {
             let deadline = Date().addingTimeInterval(5)
             while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
-            XCTAssertTrue(condition())
+            XCTAssertTrue(condition(), name)
         }
         func records() -> [[String: Any]] {
             let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
@@ -47,18 +47,39 @@ final class InputRuntimeTests: XCTestCase {
             }
         }
         let failure = ProcessInfo.processInfo.environment["MMF_TEST_TAP_FAILURE"] != nil
+        let stalledSink = ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL"] != nil
+        if stalledSink {
+            let started = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_STARTED"])
+            let callbacksDone = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_CALLBACKS_DONE"])
+            let release = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_RELEASE"])
+            let summary = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_SUMMARY"])
+            waitFor("stalled trace write started") { FileManager.default.fileExists(atPath: started) }
+            waitFor("stalled trace callbacks complete") { FileManager.default.fileExists(atPath: callbacksDone) }
+            XCTAssertEqual(try String(contentsOf: fixture.appendingPathComponent("native.txt"), encoding: .utf8), "-13700 -13700\n")
+            XCTAssertEqual(try String(contentsOfFile: summary, encoding: .utf8), "140000 0\n")
+            waitFor("stalled trace release") { FileManager.default.fileExists(atPath: release) }
+            subject = nil
+            waitFor("stalled trace clean drain") {
+                let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
+                return runs.contains { run in
+                    guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+                    return manifest["clean_shutdown"] as? Bool == true && manifest["writer_failed"] as? Bool == false && (manifest["drop_count"] as? Int ?? 0) > 0
+                }
+            }
+            return
+        }
         if failure {
-            waitFor { records().contains { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "unavailable" } }
+            waitFor("tap failure activation") { records().contains { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "unavailable" } }
             subject?.setAmountPercent(25)
-            waitFor {
+            waitFor("tap failure persisted activation") {
                 let all = records()
                 guard let persisted = all.first(where: { $0["result_code"] as? String == "persisted" }) else { return false }
                 return all.contains { $0["name"] as? String == "config.activation" && $0["operation_id"] as? String == persisted["operation_id"] as? String && $0["result_code"] as? String == "unavailable" }
             }
         } else {
-            waitFor { subject?.state == .active && records().contains { $0["name"] as? String == "input.pipeline" && $0["config_revision"] as? Int == 0 } }
+            waitFor("initial activation") { subject?.state == .active && records().contains { $0["name"] as? String == "input.pipeline" && $0["config_revision"] as? Int == 0 } }
             subject?.setAmountPercent(25)
-            waitFor { subject?.state == .active && records().contains { $0["name"] as? String == "input.pipeline" && $0["config_revision"] as? Int == 1 } }
+            waitFor("updated activation") { subject?.state == .active && records().contains { $0["name"] as? String == "input.pipeline" && $0["config_revision"] as? Int == 1 } }
             let bytes = try Data(contentsOf: store.url)
             subject?.setAmountPercent(401)
             XCTAssertEqual(subject?.configuration.amountPercent, 25)
@@ -69,10 +90,15 @@ final class InputRuntimeTests: XCTestCase {
             XCTAssertEqual(subject?.configuration.amountPercent, 25)
             XCTAssertEqual(try Data(contentsOf: store.url), bytes)
             let previousInputs = records().filter { $0["name"] as? String == "input.pipeline" }.count
-            waitFor { records().filter { $0["name"] as? String == "input.pipeline" }.count > previousInputs }
+            waitFor("post-failure input") { records().filter { $0["name"] as? String == "input.pipeline" }.count > previousInputs }
+            subject?.setEnabled(false)
+            waitFor("disabled activation") { records().contains { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "disabled" && $0["enabled"] as? Bool == false } }
+            let inputsAfterDisable = records().filter { $0["name"] as? String == "input.pipeline" }.count
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            XCTAssertEqual(records().filter { $0["name"] as? String == "input.pipeline" }.count, inputsAfterDisable)
         }
         subject = nil
-        waitFor {
+        waitFor("trace clean shutdown") {
             let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
             return runs.contains { run in
                 guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }

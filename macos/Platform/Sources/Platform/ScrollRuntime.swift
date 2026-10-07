@@ -200,7 +200,7 @@ final class TapState: @unchecked Sendable {
 @_spi(Benchmark) public final class CallbackHarness {
     private let state: TapState
 
-    @_spi(Benchmark) public init(engine: PointerInputEngine) { state = TapState(engine: engine) }
+    @_spi(Benchmark) public init(engine: PointerInputEngine, trace: Bool = true) { state = TapState(engine: engine, trace: trace ? TracePipeline() : nil) }
 
     @_spi(Benchmark) public func invoke(_ type: CGEventType, event: CGEvent) {
         _ = ScrollRuntime.callback(OpaquePointer(bitPattern: 0x1)!, type, event, Unmanaged.passUnretained(state).toOpaque())
@@ -210,8 +210,14 @@ final class TapState: @unchecked Sendable {
 
     @_spi(Benchmark) public func close() { state.complete() }
 
+    @_spi(Benchmark) public func cleanTraceShutdown() -> Bool { state.trace?.cleanShutdown() ?? false }
+
     @_spi(Benchmark) public func setReverse(_ reverse: Bool) -> Bool {
         reverse ? state.engine.setReverseDirection() : state.engine.setSystemDirection()
+    }
+
+    @_spi(Benchmark) public func setConfiguration(_ direction: ScrollDirection, amountPercent: UInt32) -> Bool {
+        state.engine.setDirection(direction, amountPercent: amountPercent)
     }
 }
 

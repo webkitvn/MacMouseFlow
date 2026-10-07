@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import tempfile
 import shutil
+import time
 import unittest
 
 
@@ -21,9 +22,12 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             "MMF_FFI_PROFILE": "debug",
             "MMF_BENCHMARK_SYNTHETIC": "1",
             "MMF_TRACE_DIR": str(trace_dir),
-            "MMF_TRACE": trace,
-            "MMF_BENCHMARK_EVENTS": "64",
+            "MMF_BENCHMARK_EVENTS": "1000",
         }
+        if trace is None:
+            environment.pop("MMF_TRACE", None)
+        else:
+            environment["MMF_TRACE"] = trace
         return subprocess.run(
             ["swift", "run", "--package-path", "macos", "benchmark"],
             cwd=ROOT,
@@ -88,11 +92,69 @@ class RuntimeTraceBundleTests(unittest.TestCase):
                     self.assertTrue(any(r["name"] == "config.rollback" and r["operation_id"] == rejected["operation_id"] and r["new_config_revision"] == 1 for r in records))
                 self.assertEqual(inputs[-1]["config_revision"], 1)
 
+    def test_stalled_trace_sink_drops_diagnostics_without_blocking_input(self):
+        self.assert_stalled_trace_sink(False)
+
+    def test_stalled_trace_sink_reports_early_callback_corruption(self):
+        result = self.assert_stalled_trace_sink(True)
+        self.assertEqual(result["summary"], "140000 139999\n")
+        self.assertTrue(result["callbacks_done"])
+        self.assertEqual(result["returncode"], 1)
+        self.assertIn("140000 0", result["output"])
+
+    def assert_stalled_trace_sink(self, corrupt):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            library = root / "platform.dylib"
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-dynamiclib", str(ROOT / "tests/fixtures/configuration_trace_platform.c"), "-framework", "ApplicationServices", "-o", str(library)], check=True)
+            subprocess.run(["swift", "build", "--build-tests", "--package-path", "macos"], cwd=ROOT, env={**os.environ, "MMF_FFI_PROFILE": "debug"}, check=True, capture_output=True)
+            binary_path = subprocess.check_output(["swift", "build", "--show-bin-path", "--package-path", "macos"], cwd=ROOT, text=True).strip()
+            binary = pathlib.Path(binary_path) / "MacMouseFlowPackageTests.xctest/Contents/MacOS/MacMouseFlowPackageTests"
+            fixture = root / "stall"; fixture.mkdir()
+            paths = {name: fixture / name for name in ("started", "callbacks-done", "release", "summary")}
+            env = {**os.environ, "DYLD_INSERT_LIBRARIES": str(library), "MMF_TEST_CONFIGURATION_TRACE_ROOT": str(fixture), "MMF_TEST_NATIVE_OUTPUT": str(fixture / "native.txt"), "MMF_TEST_TRACE_STALL": "1", "MMF_TEST_TRACE_STALL_STARTED": str(paths["started"]), "MMF_TEST_TRACE_STALL_CALLBACKS_DONE": str(paths["callbacks-done"]), "MMF_TEST_TRACE_STALL_RELEASE": str(paths["release"]), "MMF_TEST_TRACE_STALL_SUMMARY": str(paths["summary"]), "MMF_TRACE": "0", **({"MMF_TEST_TRACE_STALL_CORRUPT_EARLY": "1"} if corrupt else {})}
+            command = [str(pathlib.Path(subprocess.check_output(["xcode-select", "-p"], text=True).strip()) / "usr/bin/xctest"), "-XCTest", "PlatformTests.InputRuntimeTests/testProductionConfigurationActivationAndInputBundle", str(binary.parents[2])]
+            process = subprocess.Popen(command, env=env, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout = stderr = ""
+            try:
+                for _ in range(500):
+                    if paths["callbacks-done"].exists(): break
+                    self.assertIsNone(process.poll(), "callback path blocked by stalled diagnostic sink")
+                    time.sleep(0.01)
+                self.assertTrue(paths["started"].exists())
+                self.assertTrue(paths["callbacks-done"].exists())
+                summary = paths["summary"].read_text()
+                paths["release"].touch()
+                stdout, stderr = process.communicate(timeout=20)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    stdout, stderr = process.communicate()
+            manifests = list((fixture / "traces").glob("*/manifest.json"))
+            manifest = json.loads(manifests[0].read_text()) if len(manifests) == 1 else None
+            result = {"callbacks_done": paths["callbacks-done"].exists(), "summary": summary, "returncode": process.returncode, "output": stdout + stderr, "manifest": manifest}
+            if not corrupt:
+                self.assertEqual(result["summary"], "140000 0\n")
+                self.assertEqual(result["returncode"], 0, result["output"])
+                self.assertIsNotNone(result["manifest"])
+                self.assertTrue(result["manifest"]["clean_shutdown"], result["output"])
+                self.assertFalse(result["manifest"]["writer_failed"], result["output"])
+                self.assertGreater(result["manifest"]["drop_count"], 0, result["output"])
+            return result
+
+    def test_runtime_benchmark_fails_when_requested_trace_cannot_start(self):
+        for trace in ("1", None):
+            with self.subTest(trace=trace):
+                result = self.benchmark("/dev/null", trace)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("trace bundle failed clean shutdown", result.stderr)
+
     def test_runtime_benchmark_trace_off_and_on_bundle_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             off = self.benchmark(root / "off", "0")
             self.assertEqual(off.returncode, 0, off.stderr)
+            self.assertIn("workload events=1000 amount_updates=1000 amounts=25,100,137,400 directions=preserve,reverse axes=horizontal,vertical,multi,zero pixel_preserved", off.stdout)
             self.assertEqual(list((root / "off").glob("*/manifest.json")), [])
 
             on_root = root / "on"
@@ -115,6 +177,8 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             self.assertRegex(manifest["run_start_utc"], r".+Z$")
             self.assertTrue(manifest["clean_shutdown"])
             self.assertFalse(manifest["writer_failed"])
+            self.assertEqual(manifest["drop_count"], 0)
+            self.assertIn("trace bundle clean: drop_count=0 writer_failed=false clean_shutdown=true", on.stdout)
             records = [json.loads(line) for path in manifests[0].parent.glob("trace-*.jsonl") for line in path.read_text().splitlines()]
             self.assertIn("run.start", [record["name"] for record in records])
             self.assertIn("run.stop", [record["name"] for record in records])

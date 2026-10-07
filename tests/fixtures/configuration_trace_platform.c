@@ -1,8 +1,12 @@
 // System-boundary fixture: never installs or posts a real event tap/input.
 #include <ApplicationServices/ApplicationServices.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 struct fake_tap {
     CFMachPortRef port;
@@ -13,6 +17,29 @@ struct fake_tap {
 };
 static struct fake_tap taps[16];
 static _Atomic unsigned count;
+static _Atomic bool stalling;
+
+static int trace_segment(int fd) {
+    char path[PATH_MAX] = {0};
+    return fcntl(fd, F_GETPATH, path) == 0 && strstr(path, "/trace-1.jsonl") != NULL;
+}
+
+static void stall_trace_write(int fd, const void *buffer, size_t length) {
+    const char *started = getenv("MMF_TEST_TRACE_STALL_STARTED");
+    const char *release = getenv("MMF_TEST_TRACE_STALL_RELEASE");
+    if (!started || !release || !getenv("MMF_TEST_TRACE_STALL") || !trace_segment(fd)) return;
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&stalling, &expected, true)) return;
+    int marker = open(started, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (marker >= 0) close(marker);
+    while (access(release, F_OK) != 0) usleep(1000);
+    (void)buffer; (void)length;
+}
+
+ssize_t stall_write(int fd, const void *buffer, size_t length) {
+    stall_trace_write(fd, buffer, length);
+    return write(fd, buffer, length);
+}
 
 static void receive(CFMachPortRef port, void *message, CFIndex size, void *info) {
     (void)port; (void)message; (void)size; (void)info;
@@ -21,18 +48,32 @@ static void input(CFRunLoopTimerRef timer, void *info) {
     (void)timer;
     struct fake_tap *tap = info;
     if (!atomic_load(&tap->enabled)) return;
+    unsigned events = getenv("MMF_TEST_TRACE_STALL") ? 140000 : 1;
+    unsigned mismatches = 0;
     CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 2, 100, 100);
-    tap->callback((CGEventTapProxy)1, kCGEventScrollWheel, event, tap->info);
-    const char *path = getenv("MMF_TEST_NATIVE_OUTPUT");
-    if (path) {
-        FILE *file = fopen(path, "a");
-        if (file) {
-            fprintf(file, "%.0f %.0f\n", CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2) * 100,
-                    CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1) * 100);
-            fclose(file);
+    if (!event) return;
+    for (unsigned index = 0; index < events; ++index) {
+        CGEventSetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1, 100);
+        CGEventSetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2, 100);
+        tap->callback((CGEventTapProxy)1, kCGEventScrollWheel, event, tap->info);
+        if (getenv("MMF_TEST_TRACE_STALL_CORRUPT_EARLY") && index + 1 < events) {
+            CGEventSetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2, 0);
+            CGEventSetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1, 0);
+        }
+        double horizontal = CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2) * 100;
+        double vertical = CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1) * 100;
+        if (horizontal != -13700 || vertical != -13700) ++mismatches;
+        const char *path = getenv("MMF_TEST_NATIVE_OUTPUT");
+        if (path && index + 1 == events) {
+            FILE *file = fopen(path, "a");
+            if (file) { fprintf(file, "%.0f %.0f\n", horizontal, vertical); fclose(file); }
         }
     }
     CFRelease(event);
+    const char *summary = getenv("MMF_TEST_TRACE_STALL_SUMMARY");
+    if (summary) { FILE *file = fopen(summary, "w"); if (file) { fprintf(file, "%u %u\n", events, mismatches); fclose(file); } }
+    const char *done = getenv("MMF_TEST_TRACE_STALL_CALLBACKS_DONE");
+    if (done) { int marker = open(done, O_WRONLY | O_CREAT | O_TRUNC, 0600); if (marker >= 0) close(marker); }
 }
 static Boolean trusted(void) { return true; }
 static CFMachPortRef create(CGEventTapLocation location, CGEventTapPlacement placement,
@@ -76,6 +117,7 @@ INTERPOSE(trusted, AXIsProcessTrusted);
 INTERPOSE(create, CGEventTapCreate);
 INTERPOSE(enable, CGEventTapEnable);
 INTERPOSE(is_enabled, CGEventTapIsEnabled);
+INTERPOSE(stall_write, write);
 
 #ifdef MMF_TEST_REUSED_PORT
 #include <assert.h>
