@@ -37,6 +37,41 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             check=False,
         )
 
+    def test_smoke_lifecycle_and_unavailable_with_system_boundary_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            library = root / "platform.dylib"
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-dynamiclib", str(ROOT / "tests/fixtures/configuration_trace_platform.c"), "-framework", "ApplicationServices", "-o", str(library)], check=True)
+            build_env = {**os.environ, "MMF_FFI_PROFILE": "debug"}
+            subprocess.run(["swift", "build", "--product", "smoke", "--package-path", "macos"], cwd=ROOT, env=build_env, check=True, capture_output=True)
+            binary_path = subprocess.check_output(["swift", "build", "--show-bin-path", "--package-path", "macos"], cwd=ROOT, env=build_env, text=True).strip()
+            env = {**build_env, "DYLD_INSERT_LIBRARIES": str(library), "MMF_TRACE": "1", "MMF_TRACE_DIR": str(root / "traces"), "MMF_SMOKE_SECONDS": "0.05", "MMF_TEST_NATIVE_OUTPUT": str(root / "native.txt")}
+            result = subprocess.run([str(pathlib.Path(binary_path) / "smoke")], cwd=ROOT, env=env, text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("start: stopped/unavailable; tapDisabledByTimeout count: 0", result.stdout)
+            self.assertIn("restart: stopped/unavailable; tapDisabledByTimeout count: 0", result.stdout)
+            self.assertIn("Synthetic gestures are not physical proof", result.stdout)
+            native = (root / "native.txt").read_text().splitlines()
+            self.assertGreaterEqual(len(native), 2)
+            self.assertEqual(set(native), {"-13700 -13700"})
+            manifests = list((root / "traces").glob("*/manifest.json"))
+            self.assertEqual(len(manifests), 2)
+            for path in manifests:
+                manifest = json.loads(path.read_text())
+                self.assertTrue(manifest["clean_shutdown"])
+                self.assertFalse(manifest["writer_failed"])
+                self.assertEqual(manifest["drop_count"], 0)
+                records = [json.loads(line) for segment in path.parent.glob("trace-*.jsonl") for line in segment.read_text().splitlines()]
+                self.assertTrue(any(r["name"] == "input.pipeline" and r["native_outcome"] == "applied" for r in records))
+                self.assertFalse(any(r["name"] == "tap.timeout" for r in records))
+            failure = subprocess.run([str(pathlib.Path(binary_path) / "smoke")], cwd=ROOT, env={**env, "MMF_TEST_TAP_FAILURE": "1"}, text=True, capture_output=True, timeout=15)
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn("CGEventTap startup unavailable", failure.stderr)
+            for invalid in ("0", "61", "nan", "inf", "bad"):
+                result = subprocess.run([str(pathlib.Path(binary_path) / "smoke")], cwd=ROOT, env={**env, "MMF_SMOKE_SECONDS": invalid}, text=True, capture_output=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("MMF_SMOKE_SECONDS must be finite", result.stderr)
+
     def test_configuration_activation_input_and_backoff_export(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
