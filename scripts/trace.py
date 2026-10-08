@@ -41,13 +41,14 @@ def validate(v,run,current):
   elif current:
    line=v["granularity"]=="line_based";replace=v["decision"]=="replace";tuple=(v["granularity"],v["decision"],v["native_outcome"],v["reason_code"]);amount=v["scroll_amount_percent"]
    valid=base and exact(v["line_direction"],str) and v["line_direction"] in {"preserve","reverse"} and ((line and exact(amount,int) and 25<=amount<=400) or (not line and amount is None)) and ((replace and exact(v["decision_horizontal_hundredths"],int) and exact(v["decision_vertical_hundredths"],int)) or (not replace and v["decision_horizontal_hundredths"] is None and v["decision_vertical_hundredths"] is None)) and tuple in {("pixel_based","preserve","preserved","pixel_preserve"),("line_based","preserve","preserved","zero_input_preserve"),("line_based","preserve","preserved","neutral_amount_preserve"),("line_based","replace","applied","nonneutral_amount_transform"),("line_based","replace","applied","reverse_neutral_transform"),("line_based","replace","preserved","native_replace_rejected"),("line_based","preserve","preserved","engine_fail_open")}
-   if tuple==("line_based","preserve","preserved","zero_input_preserve"): valid=valid and v["horizontal_lines"]==0 and v["vertical_lines"]==0
-   if tuple==("line_based","preserve","preserved","neutral_amount_preserve"): valid=valid and amount==100 and v["line_direction"]=="preserve"
+   nonzero=v["horizontal_lines"]!=0 or v["vertical_lines"]!=0
+   if tuple==("line_based","preserve","preserved","zero_input_preserve"): valid=valid and not nonzero
+   if tuple==("line_based","preserve","preserved","neutral_amount_preserve"): valid=valid and nonzero and amount==100 and v["line_direction"]=="preserve"
    representable=lambda value:-3_276_800<=value<=(3_276_700 if value%100==0 else 3_276_799)
    outputs=exact(v["decision_horizontal_hundredths"],int) and exact(v["decision_vertical_hundredths"],int) and representable(v["decision_horizontal_hundredths"]) and representable(v["decision_vertical_hundredths"]) if replace else False
-   if tuple==("line_based","replace","applied","nonneutral_amount_transform"): valid=valid and amount!=100 and (v["horizontal_lines"]!=0 or v["vertical_lines"]!=0) and outputs
-   if tuple==("line_based","replace","applied","reverse_neutral_transform"): valid=valid and amount==100 and v["line_direction"]=="reverse" and (v["horizontal_lines"]!=0 or v["vertical_lines"]!=0) and outputs
-   if tuple==("line_based","replace","preserved","native_replace_rejected"): valid=valid and not outputs
+   if tuple==("line_based","replace","applied","nonneutral_amount_transform"): valid=valid and amount!=100 and nonzero and outputs
+   if tuple==("line_based","replace","applied","reverse_neutral_transform"): valid=valid and amount==100 and v["line_direction"]=="reverse" and nonzero and outputs
+   if tuple==("line_based","replace","preserved","native_replace_rejected"): valid=valid and nonzero and (amount!=100 or v["line_direction"]=="reverse") and not outputs
   else: valid=False
   if not valid:fail("record violates trace schema/privacy allowlist")
  elif v.get("name") in {"config.load","config.migration","config.persist","config.rollback","config.activation"}:
