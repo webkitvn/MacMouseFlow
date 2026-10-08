@@ -103,6 +103,15 @@ static void enable(CFMachPortRef port, bool enabled) {
     for (unsigned i = atomic_load(&count); i-- > 0;) if (taps[i].port == port) {
         atomic_store(&taps[i].enabled, enabled);
         if (!enabled && taps[i].timer) { CFRunLoopTimerInvalidate(taps[i].timer); CFRelease(taps[i].timer); taps[i].timer = NULL; }
+        const char *receipt = getenv("MMF_TEST_TAP_TEARDOWN");
+        if (!enabled && receipt) {
+            unsigned active = 0;
+            for (unsigned index = 0; index < atomic_load(&count); ++index) {
+                if (atomic_load(&taps[index].enabled) || taps[index].timer) ++active;
+            }
+            FILE *file = fopen(receipt, "a");
+            if (file) { fprintf(file, "disabled active=%u timer=%d\n", active, taps[i].timer != NULL); fclose(file); }
+        }
         return;
     }
     abort();

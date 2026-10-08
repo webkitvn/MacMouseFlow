@@ -16,7 +16,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
     def setUpClass(cls):
         subprocess.run(["cargo", "build", "-p", "pointer-input-ffi", "--locked"], cwd=ROOT, check=True)
 
-    def test_disabled_app_orderly_termination_flushes_trace_without_changing_configuration(self):
+    def test_app_orderly_termination_flushes_trace_without_changing_configuration(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             build_env = {**os.environ, "MMF_FFI_PROFILE": "debug"}
@@ -31,12 +31,14 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             subprocess.run(["swiftc", str(helper), "-o", str(terminator)], check=True, capture_output=True)
             stall_library = root / "stall.dylib"
             subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-dynamiclib", str(ROOT / "tests/fixtures/configuration_trace_platform.c"), "-framework", "ApplicationServices", "-o", str(stall_library)], check=True, capture_output=True)
-            for mode in ("app-action", "external", "stalled-external"):
+            for mode in ("app-action", "external", "stalled-external", "active-external"):
                 with self.subTest(mode=mode):
                     home = root / mode
                     config = home / "Library/Application Support/MacMouseFlow/configuration.json"
                     config.parent.mkdir(parents=True)
                     original = b'{"schema_version":2,"scroll":{"enabled":false,"line_direction":"preserve","line_amount_percent":157}}\n'
+                    if mode == "active-external":
+                        original = b'{"schema_version":2,"scroll":{"enabled":true,"line_direction":"reverse","line_amount_percent":137}}\n'
                     config.write_bytes(original)
                     traces = home / "traces"
                     env = {**build_env, "HOME": str(home), "CFFIXED_USER_HOME": str(home), "MMF_TRACE": "1", "MMF_TRACE_DIR": str(traces)}
@@ -47,6 +49,8 @@ class RuntimeTraceBundleTests(unittest.TestCase):
                         env["DYLD_INSERT_LIBRARIES"] = str(library)
                     if mode == "stalled-external":
                         env.update(DYLD_INSERT_LIBRARIES=str(stall_library), MMF_TEST_TRACE_STALL="1", MMF_TEST_TRACE_STALL_STARTED=str(home / "started"), MMF_TEST_TRACE_STALL_RELEASE=str(home / "release"))
+                    if mode == "active-external":
+                        env.update(DYLD_INSERT_LIBRARIES=str(stall_library), MMF_TEST_TAP_TEARDOWN=str(home / "tap-teardown.txt"))
                     process = subprocess.Popen([str(binary)], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     try:
                         if mode == "stalled-external":
@@ -71,15 +75,19 @@ class RuntimeTraceBundleTests(unittest.TestCase):
                             self.assertTrue(json.loads(manifests[0].read_text())["clean_shutdown"])
                             result = subprocess.run([str(terminator), str(process.pid), str(binary)], capture_output=True, text=True, timeout=10)
                             self.assertEqual(result.returncode, 0, result.stderr)
-                        if mode == "external":
+                        if mode in ("external", "active-external"):
+                            def activated(records):
+                                if mode == "external":
+                                    return any(record.get("result_code") == "disabled" for record in records)
+                                return any(record.get("result_code") == "active" for record in records) and any(record["name"] == "input.pipeline" for record in records)
                             deadline = time.monotonic() + 10
                             while time.monotonic() < deadline:
                                 records = [json.loads(line) for segment in traces.glob("*/trace-*.jsonl") for line in segment.read_text().splitlines() if line.endswith("}")]
-                                if any(record.get("result_code") == "disabled" for record in records):
+                                if activated(records):
                                     break
-                                self.assertIsNone(process.poll(), "app exited before disabled activation")
+                                self.assertIsNone(process.poll(), "app exited before expected activation")
                                 time.sleep(0.01)
-                            self.assertTrue(any(record.get("result_code") == "disabled" for record in records), "disabled activation deadline")
+                            self.assertTrue(activated(records), "expected activation/input deadline")
                             result = subprocess.run([str(terminator), str(process.pid), str(binary)], capture_output=True, text=True, timeout=10)
                             self.assertEqual(result.returncode, 0, result.stderr)
                         stdout, stderr = process.communicate(timeout=10)
@@ -97,7 +105,11 @@ class RuntimeTraceBundleTests(unittest.TestCase):
                     self.assertEqual(manifest["drop_count"], 0)
                     records = [json.loads(line) for segment in manifests[0].parent.glob("trace-*.jsonl") for line in segment.read_text().splitlines()]
                     self.assertEqual(sum(record["name"] == "run.stop" for record in records), 1)
-                    self.assertFalse(any(record["name"] == "input.pipeline" for record in records))
+                    if mode == "active-external":
+                        self.assertTrue(any(record["name"] == "input.pipeline" for record in records))
+                        self.assertEqual((home / "tap-teardown.txt").read_text(), "disabled active=0 timer=0\n")
+                    else:
+                        self.assertFalse(any(record["name"] == "input.pipeline" for record in records))
                     evidence = os.environ.get("MMF_TEST_CONFIGURATION_TRACE_EVIDENCE")
                     if evidence:
                         shutil.copytree(home, pathlib.Path(evidence) / ("termination-" + mode))
