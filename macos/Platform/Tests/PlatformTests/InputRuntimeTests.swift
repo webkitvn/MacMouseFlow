@@ -21,6 +21,34 @@ final class InputRuntimeTests: XCTestCase {
         InputRuntime(store: ConfigurationStore(directory: directory))
     }
 
+    func testShutdownRemainsUnavailableAndRejectsConfigurationAndRefresh() throws {
+        let store = ConfigurationStore(directory: directory)
+        XCTAssertTrue(store.persist(.init(enabled: false, direction: .preserve, amountPercent: 157)))
+        let bytes = try Data(contentsOf: store.url)
+        let subject = InputRuntime(store: store)
+        let completed = expectation(description: "retirement completed")
+        subject.shutdown { completed.fulfill() }
+        XCTAssertEqual(subject.state, .inputUnavailable)
+        XCTAssertFalse(subject.canEditConfiguration)
+        XCTAssertFalse(subject.canRefresh)
+        subject.setEnabled(true)
+        subject.setAmountPercent(400)
+        subject.setDirection(.reverse)
+        subject.resetMalformedConfiguration()
+        subject.refresh()
+        wait(for: [completed], timeout: 5)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        XCTAssertEqual(subject.state, .inputUnavailable)
+        XCTAssertFalse(subject.canEditConfiguration)
+        XCTAssertFalse(subject.canRefresh)
+        XCTAssertEqual(subject.configuration, .init(enabled: false, direction: .preserve, amountPercent: 157))
+        XCTAssertEqual(try Data(contentsOf: store.url), bytes)
+        let repeated = expectation(description: "repeated retirement completed")
+        subject.shutdown { repeated.fulfill() }
+        wait(for: [repeated], timeout: 5)
+        XCTAssertEqual(subject.state, .inputUnavailable)
+    }
+
     func testProductionConfigurationActivationAndInputBundle() throws {
         guard let root = ProcessInfo.processInfo.environment["MMF_TEST_CONFIGURATION_TRACE_ROOT"] else {
             throw XCTSkip("Run through tests/test_runtime_trace_bundle.py platform-boundary fixture")

@@ -23,6 +23,7 @@ public final class InputRuntime: ObservableObject {
     @Published public private(set) var hasCommittedConfiguration: Bool
     @Published public private(set) var configurationAttention: ConfigurationAttention
     @Published public private(set) var isSaving = false
+    @Published public private(set) var canRefresh = true
 
     private let store: ConfigurationStore
     public let migrationFailed: Bool
@@ -50,7 +51,7 @@ public final class InputRuntime: ObservableObject {
             trace?.configuration("config.migration", operationID: operationID, oldRevision: nil, newRevision: loaded.attention == .none ? revision : nil, configuration: configuration, result: loaded.result)
         }
         lifecycle.onStatus = { [weak self] status in
-            guard let self else { return }
+            guard let self, self.canRefresh else { return }
             self.runtimeStatus = status
             self.publishState()
         }
@@ -58,7 +59,7 @@ public final class InputRuntime: ObservableObject {
     }
 
     public var hasAccessibilityAccess: Bool { AXIsProcessTrusted() }
-    public var canEditConfiguration: Bool { !migrationFailed && (configurationAttention == .none || configurationAttention == .saveFailed) && !isSaving }
+    public var canEditConfiguration: Bool { canRefresh && !migrationFailed && (configurationAttention == .none || configurationAttention == .saveFailed) && !isSaving }
 
     public func setEnabled(_ enabled: Bool) { commit(.init(enabled: enabled, direction: configuration.direction, amountPercent: configuration.amountPercent)) }
     public func setDirection(_ direction: ScrollDirection) { commit(.init(enabled: configuration.enabled, direction: direction, amountPercent: configuration.amountPercent)) }
@@ -72,8 +73,18 @@ public final class InputRuntime: ObservableObject {
     public func refresh() { reconcileIntent() }
 
     public func requestAccessibilityAccess() {
+        guard canRefresh else { return }
         AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
         reconcileIntent()
+    }
+
+    public func shutdown(completion: @escaping @Sendable () -> Void) {
+        canRefresh = false
+        runtimeStatus = .unavailable
+        state = .inputUnavailable
+        monitor?.invalidate()
+        monitor = nil
+        lifecycle.shutdown(completion: completion)
     }
 
     deinit {
@@ -82,6 +93,7 @@ public final class InputRuntime: ObservableObject {
     }
 
     private func commit(_ candidate: PersistedConfiguration, resettingMalformed: Bool = false) {
+        guard canRefresh else { return }
         guard resettingMalformed || (canEditConfiguration && candidate != configuration) else { return }
         let operation = UUID()
         let result = store.persistOutcome(candidate, resettingMalformed: resettingMalformed)
@@ -106,6 +118,7 @@ public final class InputRuntime: ObservableObject {
     }
 
     private func reconcileIntent() {
+        guard canRefresh else { return }
         accessibilityTrusted = AXIsProcessTrusted()
         let canRun = configurationAttention != .malformed && configurationAttention != .newerSchema
         if configuration.enabled, canRun, monitor == nil {
@@ -165,19 +178,25 @@ private final class LifecycleExecutor: @unchecked Sendable {
         queue.async { [weak self] in self?.drain() }
     }
 
-    func shutdown() {
+    func shutdown(completion: @escaping @Sendable () -> Void = {}) {
         lock.lock()
-        guard !shutdownRequested else { lock.unlock(); return }
+        if shutdownRequested {
+            lock.unlock()
+            queue.async(execute: completion)
+            return
+        }
         shutdownRequested = true
         pending = false
         intent.enabled = false
-        lock.unlock()
+        // Enqueue under the lock so repeated requests complete only after retirement.
         queue.async {
             self.runtime?.stop()
             self.runtime = nil
             self.trace?.lifecycle(1)
             self.trace?.close()
+            completion()
         }
+        lock.unlock()
     }
 
     private func drain() {
