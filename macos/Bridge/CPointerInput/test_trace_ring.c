@@ -8,6 +8,6 @@ int main(void) {
   assert(!mmf_trace_ring_push(ring, &value)); assert(mmf_trace_ring_take_drops(ring) == 1);
   for (unsigned i = 0; i < MMF_TRACE_RING_CAPACITY - 1; ++i) { assert(mmf_trace_ring_pop(ring, &out)); assert(out.sequence == i); }
   assert(!mmf_trace_ring_pop(ring, &out));
-  value.sequence = 99; assert(mmf_trace_ring_push(ring, &value)); assert(mmf_trace_ring_pop(ring, &out)); assert(out.sequence == 99);
+  value.sequence = 99; value.direction = 1; value.amount_percent = 137; value.decision_horizontal = -548; value.decision_vertical = 274; assert(mmf_trace_ring_push(ring, &value)); assert(mmf_trace_ring_pop(ring, &out)); assert(out.sequence == 99 && out.direction == 1 && out.amount_percent == 137 && out.decision_horizontal == -548 && out.decision_vertical == 274);
   free(ring); return 0;
 }
