@@ -213,9 +213,15 @@ final class ScrollRuntimeTests: XCTestCase {
         XCTAssertEqual(pixel.getIntegerValueField(.scrollWheelEventDeltaAxis2), pixelAxis2)
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let oldTrace = getenv("MMF_TRACE").map { String(cString: $0) }
+        let oldDirectory = getenv("MMF_TRACE_DIR").map { String(cString: $0) }
         setenv("MMF_TRACE", "1", 1)
         setenv("MMF_TRACE_DIR", directory.path, 1)
-        defer { unsetenv("MMF_TRACE"); unsetenv("MMF_TRACE_DIR"); try? FileManager.default.removeItem(at: directory) }
+        defer {
+            if let oldTrace { setenv("MMF_TRACE", oldTrace, 1) } else { unsetenv("MMF_TRACE") }
+            if let oldDirectory { setenv("MMF_TRACE_DIR", oldDirectory, 1) } else { unsetenv("MMF_TRACE_DIR") }
+            try? FileManager.default.removeItem(at: directory)
+        }
         let callback = CallbackHarness(engine: engine)
         callback.invoke(.scrollWheel, event: pixel)
         let mouse = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: .zero, mouseButton: .left)!
@@ -226,8 +232,11 @@ final class ScrollRuntimeTests: XCTestCase {
         let run = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first)
         let records = try FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil).filter { $0.pathExtension == "jsonl" }.flatMap { try String(contentsOf: $0).split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] } }.filter { $0["name"] as? String == "input.pipeline" }
         XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0]["horizontal_lines"] as? Int, 0)
+        XCTAssertEqual(records[0]["vertical_lines"] as? Int, 0)
         XCTAssertTrue(records[0]["scroll_amount_percent"] is NSNull)
         XCTAssertTrue(records[0]["decision_horizontal_hundredths"] is NSNull)
+        XCTAssertTrue(records[0]["decision_vertical_hundredths"] is NSNull)
         XCTAssertEqual(records[0]["reason_code"] as? String, "pixel_preserve")
     }
 
