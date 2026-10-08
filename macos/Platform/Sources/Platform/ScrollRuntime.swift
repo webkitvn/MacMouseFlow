@@ -295,23 +295,42 @@ public final class ScrollRuntime {
             if type == .tapDisabledByTimeout { state.disabledByTimeout() }
             state.reenable()
         } else {
+            guard type == .scrollWheel else { return Unmanaged.passUnretained(event) }
             guard let trace = state.trace else {
                 ScrollAdapter.process(event, engine: state.engine)
                 return Unmanaged.passUnretained(event)
             }
             let start = DispatchTime.now().uptimeNanoseconds
-            let lineBased = type == .scrollWheel && event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0
+            let lineBased = event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0
             let horizontal = lineBased ? event.getIntegerValueField(.scrollWheelEventDeltaAxis2) : 0
             let vertical = lineBased ? event.getIntegerValueField(.scrollWheelEventDeltaAxis1) : 0
+            let configuration = state.engine.configuration
             let extracted = DispatchTime.now().uptimeNanoseconds
-            let decision = lineBased ? ScrollAdapter.evaluate(horizontal: horizontal, vertical: vertical, engine: state.engine) : nil
+            let decision = lineBased ? ScrollAdapter.evaluate(horizontal: horizontal, vertical: vertical, engine: state.engine) : .preserve
             let evaluated = DispatchTime.now().uptimeNanoseconds
             let outcome = decision.map { ScrollAdapter.apply(event, decision: $0) } ?? 0
             let applied = DispatchTime.now().uptimeNanoseconds
-            let unavailable = lineBased && decision == nil
             let code: UInt8
-            if case .replace? = decision { code = 1 } else { code = 0 }
-            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: outcome == 1 ? 1 : 0, reason: lineBased ? (unavailable ? 3 : (outcome == 1 ? 2 : 1)) : 0, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start, configRevision: state.configRevision)
+            let decisionHorizontal: Int64
+            let decisionVertical: Int64
+            if case let .replace(horizontal, vertical)? = decision {
+                code = 1
+                decisionHorizontal = horizontal
+                decisionVertical = vertical
+            } else {
+                code = 0
+                decisionHorizontal = 0
+                decisionVertical = 0
+            }
+            let reason: UInt8
+            if !lineBased { reason = 0 }
+            else if decision == nil { reason = 6 }
+            else if outcome != 1 && code == 1 { reason = 5 }
+            else if horizontal == 0 && vertical == 0 { reason = 1 }
+            else if configuration.amountPercent == 100 && configuration.direction == .preserve { reason = 2 }
+            else if configuration.amountPercent == 100 { reason = 4 }
+            else { reason = 3 }
+            trace.enqueue(horizontal: horizontal, vertical: vertical, granularity: lineBased ? 1 : 0, decision: code, outcome: outcome == 1 ? 1 : 0, reason: reason, direction: configuration.direction == .reverse ? 1 : 0, amountPercent: configuration.amountPercent, decisionHorizontal: decisionHorizontal, decisionVertical: decisionVertical, extractionNS: extracted - start, rustNS: lineBased ? evaluated - extracted : 0, applyNS: code == 1 ? applied - evaluated : 0, totalNS: applied - start, tNS: start, configRevision: state.configRevision)
         }
         return Unmanaged.passUnretained(event)
     }

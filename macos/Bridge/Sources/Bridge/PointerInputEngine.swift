@@ -23,6 +23,16 @@ public enum ScrollDirection: String, CaseIterable, Codable, Sendable {
     fileprivate var abiValue: UInt32 { self == .preserve ? systemDirection : reverseDirection }
 }
 
+public struct InputConfiguration: Equatable {
+    public let direction: ScrollDirection
+    public let amountPercent: UInt32
+
+    public init(direction: ScrollDirection, amountPercent: UInt32) {
+        self.direction = direction
+        self.amountPercent = amountPercent
+    }
+}
+
 public func validate(direction: ScrollDirection, amountPercent: UInt32 = 100) -> Bool {
     var configuration = pointer_input_configuration_v2(
         version: abiVersion,
@@ -36,6 +46,9 @@ public func validate(direction: ScrollDirection, amountPercent: UInt32 = 100) ->
 
 public final class PointerInputEngine {
     private var owner: UnsafeMutableRawPointer?
+    // One owning runtime serializes each engine: configure before its callback thread starts,
+    // then replaces the runtime per revision. Harnesses and tests do the same sequentially.
+    public private(set) var configuration = InputConfiguration(direction: .preserve, amountPercent: 100)
 
     public init?() {
         for _ in 0..<10 {
@@ -59,7 +72,9 @@ public final class PointerInputEngine {
             amount_percent: amountPercent,
             reserved: 0
         )
-        return pointer_input_engine_set_configuration_v2(owner, &configuration) == successStatus
+        guard pointer_input_engine_set_configuration_v2(owner, &configuration) == successStatus else { return false }
+        self.configuration = InputConfiguration(direction: direction, amountPercent: amountPercent)
+        return true
     }
 
     public func evaluate(horizontal: Int64, vertical: Int64) -> InputDecision? {

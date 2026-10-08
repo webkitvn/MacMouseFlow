@@ -41,7 +41,9 @@ final class ScrollRuntimeTests: XCTestCase {
             }
         }
         XCTAssertFalse(engine.setDirection(.preserve, amountPercent: 24))
+        XCTAssertEqual(engine.configuration, .init(direction: .reverse, amountPercent: 50))
         XCTAssertFalse(engine.setDirection(.preserve, amountPercent: 401))
+        XCTAssertEqual(engine.configuration, .init(direction: .reverse, amountPercent: 50))
         guard case let .replace(horizontal, _)? = engine.evaluate(horizontal: 1, vertical: 0) else { return XCTFail("invalid config mutated state") }
         XCTAssertEqual(horizontal, -50)
     }
@@ -107,10 +109,17 @@ final class ScrollRuntimeTests: XCTestCase {
         let files = try FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil).filter { $0.pathExtension == "jsonl" }
         let records = try files.flatMap { try String(contentsOf: $0, encoding: .utf8).split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] } }.filter { $0["name"] as? String == "input.pipeline" }.sorted { ($0["input_seq"] as! Int) < ($1["input_seq"] as! Int) }
         XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records[0]["scroll_amount_percent"] as? Int, 137)
+        XCTAssertEqual(records[0]["line_direction"] as? String, "preserve")
+        XCTAssertEqual(records[0]["decision_horizontal_hundredths"] as? Int, 13_700)
+        XCTAssertEqual(records[0]["decision_vertical_hundredths"] as? Int, 137)
         XCTAssertEqual(records[0]["native_outcome"] as? String, "applied")
+        XCTAssertEqual(records[0]["reason_code"] as? String, "nonneutral_amount_transform")
         XCTAssertEqual(records[1]["decision"] as? String, "replace")
         XCTAssertEqual(records[1]["native_outcome"] as? String, "preserved")
-        XCTAssertEqual(records[1]["reason_code"] as? String, "preserve")
+        XCTAssertEqual(records[1]["reason_code"] as? String, "native_replace_rejected")
+        XCTAssertEqual(records[1]["decision_horizontal_hundredths"] as? Int, 13_700)
+        XCTAssertEqual(records[1]["decision_vertical_hundredths"] as? Int, 3_276_903)
         XCTAssertTrue(records[1]["config_revision"] is NSNull)
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { repository.deleteLastPathComponent() }
@@ -203,10 +212,23 @@ final class ScrollRuntimeTests: XCTestCase {
         XCTAssertEqual(pixel.getIntegerValueField(.scrollWheelEventDeltaAxis1), pixelAxis1)
         XCTAssertEqual(pixel.getIntegerValueField(.scrollWheelEventDeltaAxis2), pixelAxis2)
 
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        setenv("MMF_TRACE", "1", 1)
+        setenv("MMF_TRACE_DIR", directory.path, 1)
+        defer { unsetenv("MMF_TRACE"); unsetenv("MMF_TRACE_DIR"); try? FileManager.default.removeItem(at: directory) }
+        let callback = CallbackHarness(engine: engine)
+        callback.invoke(.scrollWheel, event: pixel)
         let mouse = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: .zero, mouseButton: .left)!
         let flags = mouse.flags
-        ScrollAdapter.process(mouse, engine: engine)
+        callback.invoke(.mouseMoved, event: mouse)
         XCTAssertEqual(mouse.flags, flags)
+        callback.close()
+        let run = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first)
+        let records = try FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil).filter { $0.pathExtension == "jsonl" }.flatMap { try String(contentsOf: $0).split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] } }.filter { $0["name"] as? String == "input.pipeline" }
+        XCTAssertEqual(records.count, 1)
+        XCTAssertTrue(records[0]["scroll_amount_percent"] is NSNull)
+        XCTAssertTrue(records[0]["decision_horizontal_hundredths"] is NSNull)
+        XCTAssertEqual(records[0]["reason_code"] as? String, "pixel_preserve")
     }
 
     func testPhaseAndMomentumDoNotAffectLineEligibility() throws {

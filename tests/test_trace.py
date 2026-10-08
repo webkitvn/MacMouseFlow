@@ -6,6 +6,8 @@ class TraceTests(unittest.TestCase):
  def bundle(self,root):
   p=pathlib.Path(root)/"run-1";p.mkdir();(p/"manifest.json").write_text(json.dumps({"schema_version":1,"run_id":"run-1","run_start_utc":"2026-01-01T00:00:00Z","started_monotonic_ns":1,"clean_shutdown":True,"drop_count":2,"writer_failed":False}));return p
  def record(self):return {"schema_version":1,"run_id":"run-1","seq":1,"t_ns":2,"level":"trace","component":"native.input","name":"input.pipeline","input_seq":1,"horizontal_lines":3,"vertical_lines":-2,"granularity":"line_based","decision":"replace","native_outcome":"applied","reason_code":"replace","config_revision":None,"extraction_ns":1,"rust_eval_ns":1,"native_apply_ns":1,"total_ns":3}
+ def extended_record(self):
+  return {**self.record(),"reason_code":"nonneutral_amount_transform","scroll_amount_percent":137,"line_direction":"preserve","decision_horizontal_hundredths":411,"decision_vertical_hundredths":-274}
  def test_configuration_allowlist_and_revision_join(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);operation="12345678-1234-4234-8234-123456789ABC"
@@ -35,12 +37,14 @@ class TraceTests(unittest.TestCase):
  def test_accepts_engine_unavailable_as_preserve_reason(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);r=self.record();r["decision"]="preserve";r["reason_code"]="engine_unavailable";r["native_outcome"]="preserved";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"failure"));self.assertEqual(x.returncode,0,x.stderr)
- def test_exports_native_rejected_replacement_and_rejects_near_misses(self):
+ def test_exports_extended_records_and_rejects_partial_or_contradictory_fields(self):
   with tempfile.TemporaryDirectory() as root:
-   b=self.bundle(root);r=self.record();r["native_outcome"]="preserved";r["reason_code"]="preserve";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");target=pathlib.Path(root)/"rejected";x=self.trace(root,"export","run-1",str(target))
+   b=self.bundle(root);r=self.extended_record();(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");target=pathlib.Path(root)/"extended";x=self.trace(root,"export","run-1",str(target))
    self.assertEqual(x.returncode,0,x.stderr);self.assertEqual(json.loads((target/"trace-0.jsonl").read_text()),r)
-   for key,value in [("granularity","pixel_based"),("native_outcome","applied"),("reason_code","replace"),("reason_code","engine_unavailable")]:
-    invalid={**r,key:value};(b/"trace-0.jsonl").write_text(json.dumps(invalid)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"invalid"));self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)
+   rejected={**r,"native_outcome":"preserved","reason_code":"native_replace_rejected"};(b/"trace-0.jsonl").write_text(json.dumps(rejected)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"rejected"));self.assertEqual(x.returncode,0,x.stderr)
+   pixel={**r,"granularity":"pixel_based","decision":"preserve","native_outcome":"preserved","reason_code":"pixel_preserve","scroll_amount_percent":None,"decision_horizontal_hundredths":None,"decision_vertical_hundredths":None};(b/"trace-0.jsonl").write_text(json.dumps(pixel)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"pixel"));self.assertEqual(x.returncode,0,x.stderr)
+   for invalid in [{k:v for k,v in r.items() if k!="horizontal_lines"},{k:v for k,v in r.items() if k!="line_direction"},{**r,"horizontal_lines":[]},{**r,"scroll_amount_percent":True},{**r,"scroll_amount_percent":401},{**r,"decision_horizontal_hundredths":None},{**r,"decision_vertical_hundredths":[]},{**rejected,"reason_code":"nonneutral_amount_transform"},{**pixel,"scroll_amount_percent":137},{**pixel,"decision_horizontal_hundredths":0},{**r,"private":"raw"},{**r,"decision":"preserve","native_outcome":"preserved","reason_code":"neutral_amount_preserve","decision_horizontal_hundredths":None,"decision_vertical_hundredths":None},{**r,"scroll_amount_percent":100,"line_direction":"preserve","reason_code":"reverse_neutral_transform"},{**r,"horizontal_lines":0,"vertical_lines":1,"decision":"preserve","native_outcome":"preserved","reason_code":"zero_input_preserve","decision_horizontal_hundredths":None,"decision_vertical_hundredths":None}]:
+    (b/"trace-0.jsonl").write_text(json.dumps(invalid)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"invalid"));self.assertEqual(x.returncode,2);self.assertIn("allowlist",x.stderr)
  def test_rejects_suppress(self):
   with tempfile.TemporaryDirectory() as root:
    b=self.bundle(root);r=self.record();r["decision"]="suppress";(b/"trace-0.jsonl").write_text(json.dumps(r)+"\n");x=self.trace(root,"export","run-1",str(pathlib.Path(root)/"suppress"));self.assertEqual(x.returncode,2)

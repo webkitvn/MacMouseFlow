@@ -3,8 +3,9 @@ import CoreFoundation
 import Foundation
 import os
 
-// Fixed 131072-record ceiling absorbs the benchmark burst; overflow is explicitly dropped.
-private let traceCapacity = 131_072
+// Fixed 110000-record ceiling admits the 100000-event benchmark with headroom;
+// excess diagnostics are explicitly dropped before the 64 MiB store can fill.
+private let traceCapacity = 110_000
 private let traceStoreLimit = 64 * 1024 * 1024
 private let traceFileLimit = 1024 * 1024
 private let traceManifestReserve = 2048
@@ -21,6 +22,10 @@ private struct TraceRecord {
     let decision: UInt8
     let outcome: UInt8
     let reason: UInt8
+    let direction: UInt8
+    let amountPercent: UInt32
+    let decisionHorizontal: Int64
+    let decisionVertical: Int64
     let extractionNS: UInt64
     let rustNS: UInt64
     let applyNS: UInt64
@@ -97,12 +102,12 @@ final class TracePipeline: @unchecked Sendable {
     deinit { ring?.deallocate() }
 
     // One event-tap producer; atomic push never locks or blocks.
-    func enqueue(horizontal: Int64, vertical: Int64, granularity: UInt8, decision: UInt8, outcome: UInt8, reason: UInt8, extractionNS: UInt64, rustNS: UInt64, applyNS: UInt64, totalNS: UInt64, tNS: UInt64, kind: UInt8 = 0, configRevision: UInt64? = nil) {
+    func enqueue(horizontal: Int64, vertical: Int64, granularity: UInt8, decision: UInt8, outcome: UInt8, reason: UInt8, direction: UInt8 = 0, amountPercent: UInt32 = 0, decisionHorizontal: Int64 = 0, decisionVertical: Int64 = 0, extractionNS: UInt64, rustNS: UInt64, applyNS: UInt64, totalNS: UInt64, tNS: UInt64, kind: UInt8 = 0, configRevision: UInt64? = nil) {
         // Input sequence is assigned at native receive, before queue admission.
         if kind == 0 { nextInputSequence &+= 1 }
         let inputSequence = kind == 0 ? nextInputSequence : 0
         nextSequence &+= 1
-        var record = mmf_trace_record(kind: kind, granularity: granularity, decision: decision, outcome: outcome, reason: reason, sequence: nextSequence, input_sequence: inputSequence, config_revision: configRevision ?? UInt64.max, t_ns: tNS - started, extraction_ns: extractionNS, rust_ns: rustNS, apply_ns: applyNS, total_ns: totalNS, horizontal: horizontal, vertical: vertical)
+        var record = mmf_trace_record(kind: kind, granularity: granularity, decision: decision, outcome: outcome, reason: reason, direction: direction, sequence: nextSequence, input_sequence: inputSequence, config_revision: configRevision ?? UInt64.max, t_ns: tNS - started, extraction_ns: extractionNS, rust_ns: rustNS, apply_ns: applyNS, total_ns: totalNS, horizontal: horizontal, vertical: vertical, decision_horizontal: decisionHorizontal, decision_vertical: decisionVertical, amount_percent: amountPercent)
         if mmf_trace_ring_push(ring!, &record) != 0 { available.signal() }
     }
 
@@ -164,7 +169,7 @@ final class TracePipeline: @unchecked Sendable {
                 if losses > 0 { writeDrop(losses, &handle, &index, &segmentBytes, &sinkFailed) }
                 nextPublishSequence &+= 1
                 if record.kind == 0 {
-                    write(["schema_version": 1, "run_id": runID, "seq": nextPublishSequence, "t_ns": record.t_ns, "level": "trace", "component": "native.input", "name": "input.pipeline", "input_seq": record.input_sequence, "horizontal_lines": record.horizontal, "vertical_lines": record.vertical, "granularity": record.granularity == 1 ? "line_based" : "pixel_based", "decision": decisionName(record.decision), "native_outcome": outcomeName(record.outcome), "reason_code": reasonName(record.reason), "config_revision": record.config_revision == UInt64.max ? NSNull() : record.config_revision as Any, "extraction_ns": record.extraction_ns, "rust_eval_ns": record.rust_ns, "native_apply_ns": record.apply_ns, "total_ns": record.total_ns], &handle, &index, &segmentBytes, &sinkFailed)
+                    write(["schema_version": 1, "run_id": runID, "seq": nextPublishSequence, "t_ns": record.t_ns, "level": "trace", "component": "native.input", "name": "input.pipeline", "input_seq": record.input_sequence, "horizontal_lines": record.horizontal, "vertical_lines": record.vertical, "granularity": record.granularity == 1 ? "line_based" : "pixel_based", "decision": decisionName(record.decision), "native_outcome": outcomeName(record.outcome), "reason_code": reasonName(record.reason), "scroll_amount_percent": record.granularity == 1 ? record.amount_percent : NSNull(), "line_direction": directionName(record.direction), "decision_horizontal_hundredths": record.decision == 1 ? record.decision_horizontal : NSNull(), "decision_vertical_hundredths": record.decision == 1 ? record.decision_vertical : NSNull(), "config_revision": record.config_revision == UInt64.max ? NSNull() : record.config_revision as Any, "extraction_ns": record.extraction_ns, "rust_eval_ns": record.rust_ns, "native_apply_ns": record.apply_ns, "total_ns": record.total_ns], &handle, &index, &segmentBytes, &sinkFailed)
                 } else { writeLifecycle(record, &handle, &index, &segmentBytes, &sinkFailed) }
             }
         }
@@ -275,6 +280,7 @@ final class TracePipeline: @unchecked Sendable {
 }
 private func decisionName(_ value: UInt8) -> String { ["preserve", "replace"][Int(value)] }
 private func outcomeName(_ value: UInt8) -> String { ["preserved", "applied"][Int(value)] }
+private func directionName(_ value: UInt8) -> String { ["preserve", "reverse"][Int(value)] }
 private func lifecycleName(_ value: UInt8) -> String { ["run.start", "run.stop", "tap.failure", "source.failure", "tap.timeout", "tap.reenabled", "writer_failed"][Int(value)] }
 private func lifecycleLevel(_ value: UInt8) -> String { ["info", "info", "error", "error", "warn", "info", "error"][Int(value)] }
-private func reasonName(_ value: UInt8) -> String { ["not_line_based", "preserve", "replace", "engine_unavailable"][Int(value)] }
+private func reasonName(_ value: UInt8) -> String { ["pixel_preserve", "zero_input_preserve", "neutral_amount_preserve", "nonneutral_amount_transform", "reverse_neutral_transform", "native_replace_rejected", "engine_fail_open"][Int(value)] }

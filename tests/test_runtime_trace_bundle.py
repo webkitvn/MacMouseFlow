@@ -215,6 +215,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
                 inputs = [r for r in records if r["name"] == "input.pipeline"]
                 self.assertEqual({r["config_revision"] for r in inputs}, {0, 1})
                 self.assertTrue(all(r["horizontal_lines"] == 100 and r["vertical_lines"] == 100 and r["native_outcome"] == "applied" for r in inputs))
+                self.assertTrue(all((r["config_revision"] == 0 and r["scroll_amount_percent"] == 137 and r["line_direction"] == "reverse" and r["decision_horizontal_hundredths"] == -13_700 and r["decision_vertical_hundredths"] == -13_700 and r["reason_code"] == "nonneutral_amount_transform") or (r["config_revision"] == 1 and r["scroll_amount_percent"] == 25 and r["line_direction"] == "reverse" and r["decision_horizontal_hundredths"] == -2_500 and r["decision_vertical_hundredths"] == -2_500 and r["reason_code"] == "nonneutral_amount_transform") for r in inputs))
                 native = [tuple(map(int, line.split())) for line in (fixture / "native.txt").read_text().splitlines()]
                 self.assertEqual(len(native), len(inputs))
                 self.assertEqual(native, [(-13700, -13700) if r["config_revision"] == 0 else (-2500, -2500) for r in inputs])
