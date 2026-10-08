@@ -1,11 +1,14 @@
 import AppKit
+import Combine
 import SwiftUI
 import Platform
 
 @main
 struct MacMouseFlowApp: App {
-    @StateObject private var runtime = InputRuntime()
+    @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
     @StateObject private var settingsRequest = SettingsRequest()
+
+    private var runtime: InputRuntime { applicationDelegate.runtime }
 
     var body: some Scene {
         MenuBarExtra("MacMouseFlow", systemImage: runtime.state == .active ? "scroll" : "scroll.fill") {
@@ -18,6 +21,7 @@ struct MacMouseFlowApp: App {
             .disabled(!runtime.canEditConfiguration)
             if runtime.state == .needsAccessibilityAccess {
                 Button("Request Accessibility Access") { runtime.requestAccessibilityAccess() }
+                    .disabled(!runtime.canRefresh)
             }
             SettingsButton(request: settingsRequest)
             Divider()
@@ -30,6 +34,50 @@ struct MacMouseFlowApp: App {
         }
         .defaultPosition(.center)
         .defaultSize(width: 760, height: 520)
+    }
+}
+
+@MainActor
+private final class ApplicationDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    let runtime = InputRuntime()
+    private var runtimeObservation: AnyCancellable?
+
+    override init() {
+        super.init()
+        runtimeObservation = runtime.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }
+    }
+
+    private var terminationPending = false
+    private var retired = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if retired { return .terminateNow }
+        guard !terminationPending else { return .terminateLater }
+        terminationPending = true
+        runtime.shutdown { [weak self] in
+            RunLoop.main.perform(inModes: [.default, .modalPanel]) {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.retired = true
+                    if self.terminationPending {
+                        self.terminationPending = false
+                        sender.reply(toApplicationShouldTerminate: true)
+                    }
+                }
+            }
+        }
+        let deadline = Timer(timeInterval: 5, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.terminationPending else { return }
+                self.terminationPending = false
+                sender.reply(toApplicationShouldTerminate: false)
+            }
+        }
+        RunLoop.main.add(deadline, forMode: .default)
+        RunLoop.main.add(deadline, forMode: .modalPanel)
+        return .terminateLater
     }
 }
 
@@ -131,7 +179,7 @@ private struct RuntimeStatus: View {
             case .needsAccessibilityAccess:
                 Text("Scrolling changes are not being applied. You can save settings now; grant Accessibility access in Access to use them.")
             case .inputUnavailable:
-                Text("Scrolling changes are not being applied. Your saved settings are unchanged, and you can still edit them.")
+                Text("Scrolling changes are not being applied. Your saved settings are unchanged.")
             case .configurationNeedsAttention:
                 Text("Scrolling changes are not being applied. Review your configuration in Scrolling.")
             case .active:
@@ -226,6 +274,7 @@ private struct ScrollingPane: View {
                 if runtime.configurationAttention == .malformed {
                     Text("Your configuration could not be read. Changes are disabled until you reset it.")
                     Button("Reset Configuration") { runtime.resetMalformedConfiguration() }
+                        .disabled(!runtime.canRefresh)
                 } else if runtime.configurationAttention == .newerSchema {
                     Text("This configuration was created by a newer version. It is read-only and has not been changed.")
                 } else if runtime.migrationFailed {
@@ -283,14 +332,17 @@ private struct AccessPane: View {
                 LabeledContent("Access", value: runtime.hasAccessibilityAccess ? "Available" : "Needed")
                 if !runtime.hasAccessibilityAccess {
                     Button("Request Accessibility Access") { runtime.requestAccessibilityAccess() }
+                    .disabled(!runtime.canRefresh)
                 } else {
                     Button("Check Access Again") { runtime.refresh() }
+                        .disabled(!runtime.canRefresh)
                 }
             }
             if runtime.state == .inputUnavailable {
                 Section("Input") {
-                    Text("Changes are not currently being applied. Check access, then try again.")
+                    Text(runtime.canRefresh ? "Changes are not currently being applied. Check access, then try again." : "Scrolling changes are off. Quit and reopen MacMouseFlow to use your saved settings.")
                     Button("Try Again") { runtime.refresh() }
+                        .disabled(!runtime.canRefresh)
                 }
             }
         }
@@ -308,6 +360,7 @@ private struct DiagnosticsPane: View {
                 Text("Check whether MacMouseFlow can currently monitor eligible scroll input.")
                 LabeledContent("Availability", value: runtime.state.userLabel)
                 Button("Check Input Now") { runtime.refresh() }
+                    .disabled(!runtime.canRefresh)
             }
         }
         .formStyle(.grouped)

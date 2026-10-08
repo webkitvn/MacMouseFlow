@@ -16,6 +16,104 @@ class RuntimeTraceBundleTests(unittest.TestCase):
     def setUpClass(cls):
         subprocess.run(["cargo", "build", "-p", "pointer-input-ffi", "--locked"], cwd=ROOT, check=True)
 
+    def test_app_orderly_termination_flushes_trace_without_changing_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            build_env = {**os.environ, "MMF_FFI_PROFILE": "debug"}
+            subprocess.run(["swift", "build", "--product", "macmouseflow", "--package-path", "macos"], cwd=ROOT, env=build_env, check=True, capture_output=True)
+            binary_path = subprocess.check_output(["swift", "build", "--show-bin-path", "--package-path", "macos"], cwd=ROOT, env=build_env, text=True).strip()
+            binary = pathlib.Path(binary_path) / "macmouseflow"
+            library = root / "quit.dylib"
+            subprocess.run(["cc", "-dynamiclib", "-fobjc-arc", str(ROOT / "tests/fixtures/application_quit.m"), "-framework", "AppKit", "-o", str(library)], check=True, capture_output=True)
+            helper = root / "terminate.swift"
+            helper.write_text('import AppKit\nlet pid = pid_t(CommandLine.arguments[1])!\nlet deadline = Date().addingTimeInterval(5)\nvar running = NSRunningApplication(processIdentifier: pid)\nwhile running == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)); running = NSRunningApplication(processIdentifier: pid) }\nguard let app = running else { fputs("application PID registration deadline\\n", stderr); exit(1) }\nlet actual = app.executableURL?.path ?? "nil"\nguard actual == CommandLine.arguments[2] else { fputs("executable mismatch: \\(actual)\\n", stderr); exit(1) }\nwhile !app.isFinishedLaunching && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }\nguard app.isFinishedLaunching else { fputs("launch readiness deadline\\n", stderr); exit(2) }\nlet accepted = app.terminate()\nprint("termination request accepted: \\(accepted)")\nif !accepted && CommandLine.arguments.count < 4 { exit(1) }\n')
+            terminator = root / "terminate"
+            subprocess.run(["swiftc", str(helper), "-o", str(terminator)], check=True, capture_output=True)
+            stall_library = root / "stall.dylib"
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-dynamiclib", str(ROOT / "tests/fixtures/configuration_trace_platform.c"), "-framework", "ApplicationServices", "-o", str(stall_library)], check=True, capture_output=True)
+            for mode in ("app-action", "external", "stalled-external", "active-external"):
+                with self.subTest(mode=mode):
+                    home = root / mode
+                    config = home / "Library/Application Support/MacMouseFlow/configuration.json"
+                    config.parent.mkdir(parents=True)
+                    original = b'{"schema_version":2,"scroll":{"enabled":false,"line_direction":"preserve","line_amount_percent":157}}\n'
+                    if mode == "active-external":
+                        original = b'{"schema_version":2,"scroll":{"enabled":true,"line_direction":"reverse","line_amount_percent":137}}\n'
+                    config.write_bytes(original)
+                    traces = home / "traces"
+                    env = {**build_env, "HOME": str(home), "CFFIXED_USER_HOME": str(home), "MMF_TRACE": "1", "MMF_TRACE_DIR": str(traces)}
+                    for key in list(env):
+                        if key.startswith("DYLD_") or key.startswith("MMF_TEST"):
+                            del env[key]
+                    if mode == "app-action":
+                        env["DYLD_INSERT_LIBRARIES"] = str(library)
+                    if mode == "stalled-external":
+                        env.update(DYLD_INSERT_LIBRARIES=str(stall_library), MMF_TEST_TRACE_STALL="1", MMF_TEST_TRACE_STALL_STARTED=str(home / "started"), MMF_TEST_TRACE_STALL_RELEASE=str(home / "release"))
+                    if mode == "active-external":
+                        env.update(DYLD_INSERT_LIBRARIES=str(stall_library), MMF_TEST_TAP_TEARDOWN=str(home / "tap-teardown.txt"))
+                    process = subprocess.Popen([str(binary)], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    try:
+                        if mode == "stalled-external":
+                            deadline = time.monotonic() + 10
+                            while not (home / "started").exists() and time.monotonic() < deadline:
+                                self.assertIsNone(process.poll())
+                                time.sleep(0.01)
+                            self.assertTrue((home / "started").exists(), "existing trace write stall marker")
+                            result = subprocess.run([str(terminator), str(process.pid), str(binary), "allow-cancel"], capture_output=True, text=True, timeout=10)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            with self.assertRaises(subprocess.TimeoutExpired):
+                                process.communicate(timeout=6)
+                            self.assertIsNone(process.poll(), "deadline must cancel quit, not exit before drain")
+                            (home / "release").touch()
+                            deadline = time.monotonic() + 10
+                            while time.monotonic() < deadline:
+                                manifests = list(traces.glob("*/manifest.json"))
+                                if manifests and json.loads(manifests[0].read_text())["clean_shutdown"]:
+                                    break
+                                self.assertIsNone(process.poll(), "cancelled quit must remain cancelled after drain")
+                                time.sleep(0.01)
+                            self.assertTrue(json.loads(manifests[0].read_text())["clean_shutdown"])
+                            result = subprocess.run([str(terminator), str(process.pid), str(binary)], capture_output=True, text=True, timeout=10)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                        if mode in ("external", "active-external"):
+                            def activated(records):
+                                if mode == "external":
+                                    return any(record.get("result_code") == "disabled" for record in records)
+                                return any(record.get("result_code") == "active" for record in records) and any(record["name"] == "input.pipeline" for record in records)
+                            deadline = time.monotonic() + 10
+                            while time.monotonic() < deadline:
+                                records = [json.loads(line) for segment in traces.glob("*/trace-*.jsonl") for line in segment.read_text().splitlines() if line.endswith("}")]
+                                if activated(records):
+                                    break
+                                self.assertIsNone(process.poll(), "app exited before expected activation")
+                                time.sleep(0.01)
+                            self.assertTrue(activated(records), "expected activation/input deadline")
+                            result = subprocess.run([str(terminator), str(process.pid), str(binary)], capture_output=True, text=True, timeout=10)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                        stdout, stderr = process.communicate(timeout=10)
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.communicate()
+                    self.assertEqual(process.returncode, 0, stdout + stderr)
+                    self.assertEqual(config.read_bytes(), original)
+                    manifests = list(traces.glob("*/manifest.json"))
+                    self.assertEqual(len(manifests), 1)
+                    manifest = json.loads(manifests[0].read_text())
+                    self.assertTrue(manifest["clean_shutdown"])
+                    self.assertFalse(manifest["writer_failed"])
+                    self.assertEqual(manifest["drop_count"], 0)
+                    records = [json.loads(line) for segment in manifests[0].parent.glob("trace-*.jsonl") for line in segment.read_text().splitlines()]
+                    self.assertEqual(sum(record["name"] == "run.stop" for record in records), 1)
+                    if mode == "active-external":
+                        self.assertTrue(any(record["name"] == "input.pipeline" for record in records))
+                        self.assertEqual((home / "tap-teardown.txt").read_text(), "disabled active=0 timer=0\n")
+                    else:
+                        self.assertFalse(any(record["name"] == "input.pipeline" for record in records))
+                    evidence = os.environ.get("MMF_TEST_CONFIGURATION_TRACE_EVIDENCE")
+                    if evidence:
+                        shutil.copytree(home, pathlib.Path(evidence) / ("termination-" + mode))
+
     def benchmark(self, trace_dir, trace):
         environment = {
             **os.environ,
