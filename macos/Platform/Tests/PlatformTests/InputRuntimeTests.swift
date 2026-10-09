@@ -60,6 +60,7 @@ final class InputRuntimeTests: XCTestCase {
         defer { unsetenv("MMF_TRACE_DIR"); setenv("MMF_TRACE", "0", 1) }
         let store = ConfigurationStore(directory: fixture.appendingPathComponent("config"))
         XCTAssertTrue(store.persist(.init(enabled: true, direction: .reverse, amountPercent: 137)))
+        let initialBytes = try Data(contentsOf: store.url)
         var subject: InputRuntime? = InputRuntime(store: store)
         func waitFor(_ name: String, deadline: Date = Date().addingTimeInterval(5), _ condition: () -> Bool) {
             while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
@@ -74,6 +75,7 @@ final class InputRuntimeTests: XCTestCase {
             }
         }
         let failure = ProcessInfo.processInfo.environment["MMF_TEST_TAP_FAILURE"] != nil
+        let untrusted = ProcessInfo.processInfo.environment["MMF_TEST_UNTRUSTED"] != nil
         let stalledSink = ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL"] != nil
         if stalledSink {
             let started = try XCTUnwrap(ProcessInfo.processInfo.environment["MMF_TEST_TRACE_STALL_STARTED"])
@@ -96,13 +98,30 @@ final class InputRuntimeTests: XCTestCase {
             }
             return
         }
-        if failure {
-            waitFor("tap failure activation") { records().contains { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "unavailable" } }
+        if failure || untrusted {
+            waitFor("unavailable activation") { records().contains { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "unavailable" } }
+            let initial = try XCTUnwrap(records().first { $0["name"] as? String == "config.load" })
+            let initialActivation = try XCTUnwrap(records().first { $0["name"] as? String == "config.activation" && $0["operation_id"] as? String == initial["operation_id"] as? String })
+            XCTAssertEqual(initialActivation["result_code"] as? String, "unavailable")
+            XCTAssertTrue(initialActivation["old_config_revision"] is NSNull)
+            XCTAssertTrue(initialActivation["new_config_revision"] is NSNull)
+            XCTAssertEqual(initialActivation["line_amount_percent"] as? Int, 137)
+            XCTAssertTrue(initialActivation["enabled"] as? Bool == true)
+            XCTAssertEqual(try Data(contentsOf: store.url), initialBytes)
             subject?.setAmountPercent(25)
-            waitFor("tap failure persisted activation") {
+            waitFor("unavailable persisted activation") {
                 let all = records()
                 guard let persisted = all.first(where: { $0["result_code"] as? String == "persisted" }) else { return false }
                 return all.contains { $0["name"] as? String == "config.activation" && $0["operation_id"] as? String == persisted["operation_id"] as? String && $0["result_code"] as? String == "unavailable" }
+            }
+            let all = records()
+            let unavailable = all.filter { $0["name"] as? String == "config.activation" && $0["result_code"] as? String == "unavailable" }
+            XCTAssertTrue(unavailable.allSatisfy { $0["new_config_revision"] is NSNull })
+            XCTAssertFalse(all.contains { $0["name"] as? String == "input.pipeline" })
+            if failure {
+                XCTAssertEqual(try String(contentsOf: fixture.appendingPathComponent("native.txt"), encoding: .utf8), "tap_creation_failed\n")
+            } else {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.appendingPathComponent("native.txt").path))
             }
         } else {
             waitFor("initial activation") { subject?.state == .active && records().contains { $0["name"] as? String == "input.pipeline" && $0["config_revision"] as? Int == 0 } }
@@ -164,27 +183,47 @@ final class InputRuntimeTests: XCTestCase {
                 XCTAssertTrue(subject?.migrationFailed == true)
                 XCTAssertFalse(subject?.canEditConfiguration == true)
             }
-            subject = nil
             if readOnly { try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: configDirectory.path) }
             if result != "migrated" { XCTAssertEqual(try Data(contentsOf: store.url), source) }
-            let deadline = Date().addingTimeInterval(5)
-            var load: [String: Any]?
-            while Date() < deadline, load == nil {
-                for run in (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? [] {
-                    guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")),
-                          let manifest = try JSONSerialization.jsonObject(with: data) as? [String: Any], manifest["clean_shutdown"] as? Bool == true else { continue }
-                    for file in (try? FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil)) ?? [] where file.pathExtension == "jsonl" {
-                        for line in (try String(contentsOf: file, encoding: .utf8)).split(separator: "\n") {
-                            let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
-                            if record["name"] as? String == "config.load" { load = record }
-                        }
+            func liveRecords() -> [[String: Any]] {
+                let runs = (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? []
+                return runs.flatMap { run in
+                    ((try? FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension == "jsonl" }.flatMap { file in
+                        ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
                     }
                 }
-                if load == nil { Thread.sleep(forTimeInterval: 0.01) }
             }
-            XCTAssertEqual(load?["result_code"] as? String, result)
-            if result == "loaded" || result == "migrated" { XCTAssertEqual(load?["new_config_revision"] as? Int, 0) }
-            else { XCTAssertTrue(load?["new_config_revision"] is NSNull) }
+            let deadline = Date().addingTimeInterval(5)
+            let requiresRetiredActivation = result != "loaded" && result != "migrated"
+            while Date() < deadline {
+                let records = liveRecords()
+                guard let load = records.first(where: { $0["name"] as? String == "config.load" }) else { Thread.sleep(forTimeInterval: 0.01); continue }
+                if !requiresRetiredActivation || records.contains(where: { $0["name"] as? String == "config.activation" && $0["operation_id"] as? String == load["operation_id"] as? String }) { break }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            subject = nil
+            var completed = [[String: Any]]()
+            while Date() < deadline {
+                for run in (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? [] {
+                    guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any], manifest["clean_shutdown"] as? Bool == true else { continue }
+                    completed = try FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil).filter { $0.pathExtension == "jsonl" }.flatMap { file in
+                        try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map { try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]) }
+                    }
+                    break
+                }
+                if !completed.isEmpty { break }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let load = try XCTUnwrap(completed.first { $0["name"] as? String == "config.load" })
+            XCTAssertEqual(load["result_code"] as? String, result)
+            if result == "loaded" || result == "migrated" { XCTAssertEqual(load["new_config_revision"] as? Int, 0) }
+            else {
+                XCTAssertTrue(load["new_config_revision"] is NSNull)
+                let activation = try XCTUnwrap(completed.first { $0["name"] as? String == "config.activation" && $0["operation_id"] as? String == load["operation_id"] as? String })
+                XCTAssertEqual(activation["result_code"] as? String, "disabled")
+                XCTAssertTrue(activation["new_config_revision"] is NSNull)
+                XCTAssertFalse(completed.contains { $0["name"] as? String == "input.pipeline" })
+            }
         }
     }
 

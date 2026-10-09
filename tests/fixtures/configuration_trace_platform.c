@@ -76,7 +76,7 @@ static void input(CFRunLoopTimerRef timer, void *info) {
     const char *done = getenv("MMF_TEST_TRACE_STALL_CALLBACKS_DONE");
     if (done) { int marker = open(done, O_WRONLY | O_CREAT | O_TRUNC, 0600); if (marker >= 0) close(marker); }
 }
-static Boolean trusted(void) { return true; }
+static Boolean trusted(void) { return getenv("MMF_TEST_UNTRUSTED") ? false : true; }
 static CFMachPortRef create(CGEventTapLocation location, CGEventTapPlacement placement,
                            CGEventTapOptions options, CGEventMask mask,
                            CGEventTapCallBack callback, void *info) {

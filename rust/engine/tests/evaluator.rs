@@ -163,6 +163,93 @@ fn amount_is_exact_stateless_and_orthogonal_to_direction() {
 }
 
 #[test]
+fn scroll_amount_literal_acceptance_matrix() {
+    for (configuration, amount, horizontal_lines, expected) in [
+        (
+            ScrollConfiguration::system(),
+            25,
+            4,
+            InputDecision::Replace(LineBasedReplacement {
+                horizontal_hundredths: 100,
+                vertical_hundredths: 0,
+            }),
+        ),
+        (
+            ScrollConfiguration::system(),
+            50,
+            4,
+            InputDecision::Replace(LineBasedReplacement {
+                horizontal_hundredths: 200,
+                vertical_hundredths: 0,
+            }),
+        ),
+        (
+            ScrollConfiguration::system(),
+            100,
+            4,
+            InputDecision::Preserve,
+        ),
+        (
+            ScrollConfiguration::system(),
+            200,
+            4,
+            InputDecision::Replace(LineBasedReplacement {
+                horizontal_hundredths: 800,
+                vertical_hundredths: 0,
+            }),
+        ),
+        (
+            ScrollConfiguration::system(),
+            400,
+            4,
+            InputDecision::Replace(LineBasedReplacement {
+                horizontal_hundredths: 1600,
+                vertical_hundredths: 0,
+            }),
+        ),
+        (
+            ScrollConfiguration::reverse(),
+            50,
+            4,
+            InputDecision::Replace(LineBasedReplacement {
+                horizontal_hundredths: -200,
+                vertical_hundredths: 0,
+            }),
+        ),
+        (
+            ScrollConfiguration::system(),
+            137,
+            100,
+            InputDecision::Replace(LineBasedReplacement {
+                horizontal_hundredths: 13700,
+                vertical_hundredths: 0,
+            }),
+        ),
+    ] {
+        let engine = pointer_input_engine::Engine::new(configuration.with_amount(amount).unwrap());
+        assert_eq!(
+            engine.evaluate(line_event(horizontal_lines, 0, SourceClass::Unknown)),
+            pointer_input_engine::Evaluation::success(expected)
+        );
+    }
+
+    let engine =
+        pointer_input_engine::Engine::new(ScrollConfiguration::reverse().with_amount(400).unwrap());
+    let event = InputEvent::Scroll(ScrollEvent {
+        source: InputSource {
+            source_class: SourceClass::Unknown,
+        },
+        granularity: ScrollGranularity::PixelBased,
+        horizontal_lines: 4,
+        vertical_lines: 0,
+    });
+    assert_eq!(
+        engine.evaluate(event),
+        pointer_input_engine::Evaluation::success(InputDecision::Preserve)
+    );
+}
+
+#[test]
 fn multiplication_and_negation_overflow_preserve_the_whole_event() {
     for (configuration, amount, horizontal, vertical) in [
         (ScrollConfiguration::system(), 400, 1, i64::MAX),
