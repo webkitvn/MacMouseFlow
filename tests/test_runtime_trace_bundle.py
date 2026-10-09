@@ -20,9 +20,9 @@ class RuntimeTraceBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             build_env = {**os.environ, "MMF_FFI_PROFILE": "debug"}
-            subprocess.run(["swift", "build", "--product", "macmouseflow", "--package-path", "macos"], cwd=ROOT, env=build_env, check=True, capture_output=True)
+            subprocess.run(["swift", "build", "--product", "mousemeld", "--package-path", "macos"], cwd=ROOT, env=build_env, check=True, capture_output=True)
             binary_path = subprocess.check_output(["swift", "build", "--show-bin-path", "--package-path", "macos"], cwd=ROOT, env=build_env, text=True).strip()
-            binary = pathlib.Path(binary_path) / "macmouseflow"
+            binary = pathlib.Path(binary_path) / "mousemeld"
             library = root / "quit.dylib"
             subprocess.run(["cc", "-dynamiclib", "-fobjc-arc", str(ROOT / "tests/fixtures/application_quit.m"), "-framework", "AppKit", "-o", str(library)], check=True, capture_output=True)
             helper = root / "terminate.swift"
@@ -34,7 +34,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             for mode in ("app-action", "external", "stalled-external", "active-external"):
                 with self.subTest(mode=mode):
                     home = root / mode
-                    config = home / "Library/Application Support/MacMouseFlow/configuration.json"
+                    config = home / "Library/Application Support/MouseMeld/configuration.json"
                     config.parent.mkdir(parents=True)
                     original = b'{"schema_version":2,"scroll":{"enabled":false,"line_direction":"preserve","line_amount_percent":157}}\n'
                     if mode == "active-external":
@@ -177,7 +177,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-dynamiclib", str(ROOT / "tests/fixtures/configuration_trace_platform.c"), "-framework", "ApplicationServices", "-o", str(library)], check=True)
             subprocess.run(["swift", "build", "--build-tests", "--package-path", "macos"], cwd=ROOT, env={**os.environ, "MMF_FFI_PROFILE": "debug"}, check=True, capture_output=True)
             binary_path = subprocess.check_output(["swift", "build", "--show-bin-path", "--package-path", "macos"], cwd=ROOT, text=True).strip()
-            binary = pathlib.Path(binary_path) / "MacMouseFlowPackageTests.xctest/Contents/MacOS/MacMouseFlowPackageTests"
+            binary = pathlib.Path(binary_path) / "MouseMeldPackageTests.xctest/Contents/MacOS/MouseMeldPackageTests"
             for failure, untrusted in [(False, False), (True, False), (False, True)]:
                 fixture = root / ("untrusted" if untrusted else "backoff" if failure else "active")
                 fixture.mkdir()
@@ -251,7 +251,7 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-dynamiclib", str(ROOT / "tests/fixtures/configuration_trace_platform.c"), "-framework", "ApplicationServices", "-o", str(library)], check=True)
             subprocess.run(["swift", "build", "--build-tests", "--package-path", "macos"], cwd=ROOT, env={**os.environ, "MMF_FFI_PROFILE": "debug"}, check=True, capture_output=True)
             binary_path = subprocess.check_output(["swift", "build", "--show-bin-path", "--package-path", "macos"], cwd=ROOT, text=True).strip()
-            binary = pathlib.Path(binary_path) / "MacMouseFlowPackageTests.xctest/Contents/MacOS/MacMouseFlowPackageTests"
+            binary = pathlib.Path(binary_path) / "MouseMeldPackageTests.xctest/Contents/MacOS/MouseMeldPackageTests"
             fixture = root / "stall"; fixture.mkdir()
             paths = {name: fixture / name for name in ("started", "callbacks-done", "release", "summary")}
             env = {**os.environ, "DYLD_INSERT_LIBRARIES": str(library), "MMF_TEST_CONFIGURATION_TRACE_ROOT": str(fixture), "MMF_TEST_NATIVE_OUTPUT": str(fixture / "native.txt"), "MMF_TEST_TRACE_STALL": "1", "MMF_TEST_TRACE_STALL_STARTED": str(paths["started"]), "MMF_TEST_TRACE_STALL_CALLBACKS_DONE": str(paths["callbacks-done"]), "MMF_TEST_TRACE_STALL_RELEASE": str(paths["release"]), "MMF_TEST_TRACE_STALL_SUMMARY": str(paths["summary"]), "MMF_TRACE": "0", **({"MMF_TEST_TRACE_STALL_CORRUPT_EARLY": "1"} if corrupt else {})}

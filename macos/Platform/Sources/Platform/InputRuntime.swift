@@ -153,7 +153,7 @@ private final class LifecycleExecutor: @unchecked Sendable {
 
     init(trace: TracePipeline?) { self.trace = trace }
 
-    private let queue = DispatchQueue(label: "io.github.webkitvn.macmouseflow.lifecycle")
+    private let queue = DispatchQueue(label: "io.github.webkitvn.mousemeld.lifecycle")
     private let lock = NSLock()
     private var intent = Intent(enabled: false, trusted: false, direction: .preserve, amountPercent: 100, revision: 0, operationID: UUID(), previousRevision: nil)
     private var pending = false

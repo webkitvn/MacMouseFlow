@@ -49,7 +49,7 @@ public final class ConfigurationStore {
 
     public init(directory: URL? = nil) {
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MacMouseFlow", isDirectory: true)
+            .appendingPathComponent("MouseMeld", isDirectory: true)
         url = base.appendingPathComponent("configuration.json")
     }
 

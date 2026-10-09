@@ -239,7 +239,7 @@ public final class ScrollRuntime {
         let state = TapState(engine: engine, trace: trace, configRevision: configRevision, ownsTrace: ownsTrace)
         self.state = state
         thread = Thread { state.run() }
-        thread.name = "MacMouseFlow CGEventTap"
+        thread.name = "MouseMeld CGEventTap"
     }
 
     public func start() -> Bool {

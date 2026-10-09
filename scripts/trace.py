@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Validate, follow, and export local MacMouseFlow diagnostic bundles."""
+"""Validate, follow, and export local MouseMeld diagnostic bundles."""
 from __future__ import annotations
 import argparse, datetime, json, os, shutil, sys, tempfile, time, uuid
 from pathlib import Path
-ROOT = Path(os.environ.get("MMF_TRACE_DIR", Path.home() / "Library/Application Support/io.github.webkitvn.macmouseflow/Traces"))
+ROOT = Path(os.environ.get("MMF_TRACE_DIR", Path.home() / "Library/Application Support/io.github.webkitvn.mousemeld/Traces"))
 def fail(m): print(f"TRACE_ERROR: {m}", file=sys.stderr); raise SystemExit(2)
 def exact(v,t): return type(v) is t
 def bundles(): return sorted((p for p in ROOT.glob("*") if (p / "manifest.json").is_file()), key=lambda p:p.stat().st_mtime)
@@ -94,7 +94,7 @@ def tail(b):
 def main():
  a=argparse.ArgumentParser(); s=a.add_subparsers(dest="cmd",required=True); t=s.add_parser("tail");t.add_argument("run_id",nargs="?");e=s.add_parser("export");e.add_argument("run_id",nargs="?");e.add_argument("destination",nargs="?");x=a.parse_args();b=selected(getattr(x,"run_id",None))
  if x.cmd=="tail":tail(b);return
- d=Path(x.destination) if x.destination else Path.home()/"Downloads"/"MacMouseFlow-Traces"/b.name
+ d=Path(x.destination) if x.destination else Path.home()/"Downloads"/"MouseMeld-Traces"/b.name
  if d.exists():fail("export destination already exists")
  d.parent.mkdir(parents=True,exist_ok=True)
  tmp=Path(tempfile.mkdtemp(prefix=d.name+".tmp-",dir=d.parent))

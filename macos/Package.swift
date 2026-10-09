@@ -21,10 +21,10 @@ let bridgeLinkerSettings: [LinkerSetting] =
     : [.unsafeFlags(["-L../target/\(ffiTargetDir)", "-lpointer_input_ffi"])]
 
 let package = Package(
-    name: "MacMouseFlow",
+    name: "MouseMeld",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "macmouseflow", targets: ["App"]),
+        .executable(name: "mousemeld", targets: ["App"]),
         .executable(name: "coherence-check", targets: ["CoherenceCheck"]),
         .executable(name: "smoke", targets: ["Smoke"]),
         .executable(name: "benchmark", targets: ["Benchmark"]),
