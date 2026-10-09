@@ -178,12 +178,14 @@ class RuntimeTraceBundleTests(unittest.TestCase):
             subprocess.run(["swift", "build", "--build-tests", "--package-path", "macos"], cwd=ROOT, env={**os.environ, "MMF_FFI_PROFILE": "debug"}, check=True, capture_output=True)
             binary_path = subprocess.check_output(["swift", "build", "--show-bin-path", "--package-path", "macos"], cwd=ROOT, text=True).strip()
             binary = pathlib.Path(binary_path) / "MacMouseFlowPackageTests.xctest/Contents/MacOS/MacMouseFlowPackageTests"
-            for failure in [False, True]:
-                fixture = root / ("backoff" if failure else "active")
+            for failure, untrusted in [(False, False), (True, False), (False, True)]:
+                fixture = root / ("untrusted" if untrusted else "backoff" if failure else "active")
                 fixture.mkdir()
                 env = {**os.environ, "DYLD_INSERT_LIBRARIES": str(library), "MMF_TEST_CONFIGURATION_TRACE_ROOT": str(fixture), "MMF_TEST_NATIVE_OUTPUT": str(fixture / "native.txt"), "MMF_TRACE": "0"}
                 if failure:
                     env["MMF_TEST_TAP_FAILURE"] = "1"
+                if untrusted:
+                    env["MMF_TEST_UNTRUSTED"] = "1"
                 result = subprocess.run([str(pathlib.Path(subprocess.check_output(["xcode-select", "-p"], text=True).strip()) / "usr/bin/xctest"), "-XCTest", "PlatformTests.InputRuntimeTests/testProductionConfigurationActivationAndInputBundle", str(binary.parents[2])], env=env, cwd=ROOT, text=True, capture_output=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("Executed 1 test", result.stdout + result.stderr)
@@ -204,11 +206,14 @@ class RuntimeTraceBundleTests(unittest.TestCase):
                 persisted = next(r for r in records if r.get("result_code") == "persisted")
                 self.assertEqual((persisted["old_config_revision"], persisted["new_config_revision"], persisted["line_amount_percent"]), (0, 1, 25))
                 activation = next(r for r in records if r["name"] == "config.activation" and r["operation_id"] == persisted["operation_id"])
-                self.assertEqual(activation["result_code"], "unavailable" if failure else "active")
-                if failure:
+                self.assertEqual(activation["result_code"], "unavailable" if failure or untrusted else "active")
+                if failure or untrusted:
                     self.assertIsNone(activation["new_config_revision"])
                     self.assertFalse(any(r["name"] == "input.pipeline" for r in records))
-                    self.assertEqual((fixture / "native.txt").read_text(), "tap_creation_failed\n")
+                    if failure:
+                        self.assertEqual((fixture / "native.txt").read_text(), "tap_creation_failed\n")
+                    else:
+                        self.assertFalse((fixture / "native.txt").exists())
                     continue
                 loaded = next(r for r in records if r["name"] == "config.load")
                 self.assertTrue(any(r["name"] == "config.activation" and r["operation_id"] == loaded["operation_id"] and r["new_config_revision"] == 0 for r in records))

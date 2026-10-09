@@ -40,6 +40,43 @@ final class ScrollRuntimeTests: XCTestCase {
                 XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1), pointY)
             }
         }
+        for (direction, amount, inputHorizontal, inputVertical, expectedHorizontal, expectedVertical, nativeHorizontal, nativeVertical): (ScrollDirection, UInt32, Int64, Int64, Int64, Int64, Int64, Int64) in [
+            (.preserve, 25, 4, -4, 100, -100, 1, -1),
+            (.preserve, 50, 4, -4, 200, -200, 2, -2),
+            (.preserve, 200, 4, -4, 800, -800, 8, -8),
+            (.preserve, 400, 4, -4, 1600, -1600, 16, -16),
+            (.reverse, 50, 4, -4, -200, 200, -2, 2),
+            (.preserve, 137, 100, -100, 13_700, -13_700, 137, -137),
+        ] {
+            XCTAssertTrue(engine.setDirection(direction, amountPercent: amount))
+            guard case let .replace(horizontal, vertical)? = engine.evaluate(horizontal: inputHorizontal, vertical: inputVertical) else { return XCTFail("expected literal replacement") }
+            XCTAssertEqual(horizontal, expectedHorizontal)
+            XCTAssertEqual(vertical, expectedVertical)
+            let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: Int32(inputVertical), wheel2: Int32(inputHorizontal), wheel3: 0))
+            XCTAssertEqual(ScrollAdapter.process(event, engine: engine), 1)
+            let native = try XCTUnwrap(NSEvent(cgEvent: event))
+            XCTAssertEqual(Double(native.scrollingDeltaX), Double(nativeHorizontal))
+            XCTAssertEqual(Double(native.scrollingDeltaY), Double(nativeVertical))
+            XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventDeltaAxis2), nativeHorizontal)
+            XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventDeltaAxis1), nativeVertical)
+        }
+        XCTAssertTrue(engine.setDirection(.preserve, amountPercent: 100))
+        guard case .preserve? = engine.evaluate(horizontal: 4, vertical: -4) else { return XCTFail("expected 100% preserve") }
+        let amount100 = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: -4, wheel2: 4, wheel3: 0))
+        XCTAssertEqual(ScrollAdapter.process(amount100, engine: engine), 0)
+        let native100 = try XCTUnwrap(NSEvent(cgEvent: amount100))
+        XCTAssertEqual(Double(native100.scrollingDeltaX), 4)
+        XCTAssertEqual(Double(native100.scrollingDeltaY), -4)
+        XCTAssertEqual(amount100.getIntegerValueField(.scrollWheelEventDeltaAxis2), 4)
+        XCTAssertEqual(amount100.getIntegerValueField(.scrollWheelEventDeltaAxis1), -4)
+        XCTAssertTrue(engine.setDirection(.reverse, amountPercent: 400))
+        let pixel400 = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -4, wheel2: 4, wheel3: 0))
+        let pixel400Axis1 = pixel400.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        let pixel400Axis2 = pixel400.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+        XCTAssertEqual(ScrollAdapter.process(pixel400, engine: engine), 0)
+        XCTAssertEqual(pixel400.getIntegerValueField(.scrollWheelEventDeltaAxis1), pixel400Axis1)
+        XCTAssertEqual(pixel400.getIntegerValueField(.scrollWheelEventDeltaAxis2), pixel400Axis2)
+        XCTAssertTrue(engine.setDirection(.reverse, amountPercent: 50))
         XCTAssertFalse(engine.setDirection(.preserve, amountPercent: 24))
         XCTAssertEqual(engine.configuration, .init(direction: .reverse, amountPercent: 50))
         XCTAssertFalse(engine.setDirection(.preserve, amountPercent: 401))
