@@ -193,17 +193,23 @@ final class InputRuntimeTests: XCTestCase {
                     }
                 }
             }
-            let deadline = Date().addingTimeInterval(5)
+            let discoveryDeadline = Date().addingTimeInterval(5)
             let requiresRetiredActivation = result != "loaded" && result != "migrated"
-            while Date() < deadline {
+            var discovered = false
+            while Date() < discoveryDeadline {
                 let records = liveRecords()
-                guard let load = records.first(where: { $0["name"] as? String == "config.load" }) else { Thread.sleep(forTimeInterval: 0.01); continue }
-                if !requiresRetiredActivation || records.contains(where: { $0["name"] as? String == "config.activation" && $0["operation_id"] as? String == load["operation_id"] as? String }) { break }
+                guard let load = records.first(where: { $0["name"] as? String == "config.load" && $0["result_code"] as? String == result }) else { Thread.sleep(forTimeInterval: 0.01); continue }
+                if !requiresRetiredActivation || records.contains(where: { $0["name"] as? String == "config.activation" && $0["operation_id"] as? String == load["operation_id"] as? String }) {
+                    discovered = true
+                    break
+                }
                 Thread.sleep(forTimeInterval: 0.01)
             }
+            XCTAssertTrue(discovered, "expected matching load evidence before shutdown")
             subject = nil
+            let completionDeadline = Date().addingTimeInterval(5)
             var completed = [[String: Any]]()
-            while Date() < deadline {
+            while Date() < completionDeadline {
                 for run in (try? FileManager.default.contentsOfDirectory(at: traceDirectory, includingPropertiesForKeys: nil)) ?? [] {
                     guard let data = try? Data(contentsOf: run.appendingPathComponent("manifest.json")), let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any], manifest["clean_shutdown"] as? Bool == true else { continue }
                     completed = try FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil).filter { $0.pathExtension == "jsonl" }.flatMap { file in
