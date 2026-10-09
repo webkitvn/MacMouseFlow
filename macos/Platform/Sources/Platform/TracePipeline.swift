@@ -62,13 +62,13 @@ final class TracePipeline: @unchecked Sendable {
     private var writerFailed = false
     private let available = DispatchSemaphore(value: 0), drained = DispatchSemaphore(value: 0)
     private let root: URL, destination: URL
-    private let logger = Logger(subsystem: "io.github.webkitvn.macmouseflow", category: "diagnostics")
+    private let logger = Logger(subsystem: "io.github.webkitvn.mousemeld", category: "diagnostics")
 
     init?() {
         // M0 is one process; there are no cross-process trace writers. Store accounting is process-local.
         guard ProcessInfo.processInfo.environment["MMF_TRACE"] != "0" else { return nil }
         let configured = ProcessInfo.processInfo.environment["MMF_TRACE_DIR"]
-        root = configured.map(URL.init(fileURLWithPath:)) ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/io.github.webkitvn.macmouseflow/Traces")
+        root = configured.map(URL.init(fileURLWithPath:)) ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/io.github.webkitvn.mousemeld/Traces")
         destination = root.appendingPathComponent(runID, isDirectory: true)
         do {
             TraceStore.shared.lock.lock()

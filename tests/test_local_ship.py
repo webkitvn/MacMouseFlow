@@ -90,7 +90,7 @@ class ConfigEvidenceTests(FakeHomeTestCase):
     def test_config_path_matches_runtime_configuration_store_path(self):
         self.assertEqual(
             local_ship.config_path(),
-            self.tmp_home / "Library" / "Application Support" / "MacMouseFlow" / "configuration.json",
+            self.tmp_home / "Library" / "Application Support" / "MouseMeld" / "configuration.json",
         )
         self.assertNotIn(local_ship.BUNDLE_ID, local_ship.config_path().parts)
 
@@ -142,7 +142,7 @@ class BundleValidationTests(FakeHomeTestCase):
         self.assertIn("bundle id", result.reason)
 
     def test_rejects_unexpected_executable_name(self):
-        bundle = make_bundle(self.tmp_home, executable_name="not-macmouseflow")
+        bundle = make_bundle(self.tmp_home, executable_name="not-mousemeld")
         result = local_ship.validate_bundle_identity(bundle)
         self.assertFalse(result.ok)
         self.assertIn("executable", result.reason)
@@ -404,7 +404,7 @@ class BundleValidationTests(FakeHomeTestCase):
         bundle = make_bundle(self.tmp_home)  # genuinely ad-hoc signed; passes --verify
         non_adhoc_transcript = (
             "Executable=" + str(bundle / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME) + "\n"
-            "Identifier=io.github.webkitvn.macmouseflow\n"
+            "Identifier=io.github.webkitvn.mousemeld\n"
             "Format=app bundle with Mach-O thin (arm64)\n"
             "CodeDirectory v=20400 size=1176 flags=0x0(none) hashes=30+3 location=embedded\n"
             "Signature=Apple Development: Example Developer (ABCDE12345)\n"
@@ -509,7 +509,7 @@ class GuardedLaunchProbeTests(FakeHomeTestCase):
                 "home = pathlib.Path(os.environ['HOME'])\n"
                 "assert str(home) == os.environ['CFFIXED_USER_HOME']\n"
                 f"assert home != pathlib.Path({str(self.tmp_home)!r})\n"
-                "config = home / 'Library/Application Support/MacMouseFlow/configuration.json'\n"
+                "config = home / 'Library/Application Support/MouseMeld/configuration.json'\n"
                 "assert not config.exists()\n"
                 "config.parent.mkdir(parents=True)\n"
                 f"config.write_bytes({v1!r})\n"

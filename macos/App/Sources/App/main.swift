@@ -4,14 +4,14 @@ import SwiftUI
 import Platform
 
 @main
-struct MacMouseFlowApp: App {
+struct MouseMeldApp: App {
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
     @StateObject private var settingsRequest = SettingsRequest()
 
     private var runtime: InputRuntime { applicationDelegate.runtime }
 
     var body: some Scene {
-        MenuBarExtra("MacMouseFlow", systemImage: runtime.state == .active ? "scroll" : "scroll.fill") {
+        MenuBarExtra("MouseMeld", systemImage: runtime.state == .active ? "scroll" : "scroll.fill") {
             LabeledContent("Status", value: runtime.state.userLabel)
             Divider()
             Toggle("Enable", isOn: Binding(
@@ -25,7 +25,7 @@ struct MacMouseFlowApp: App {
             }
             SettingsButton(request: settingsRequest)
             Divider()
-            Button("Quit MacMouseFlow") { NSApplication.shared.terminate(nil) }
+            Button("Quit MouseMeld") { NSApplication.shared.terminate(nil) }
         }
         .menuBarExtraStyle(.menu)
 
@@ -278,15 +278,15 @@ private struct ScrollingPane: View {
                 } else if runtime.configurationAttention == .newerSchema {
                     Text("This configuration was created by a newer version. It is read-only and has not been changed.")
                 } else if runtime.migrationFailed {
-                    Text("Your saved settings could not be updated. Scrolling changes are off and your saved settings are unchanged. Quit and reopen MacMouseFlow to try again.")
+                    Text("Your saved settings could not be updated. Scrolling changes are off and your saved settings are unchanged. Quit and reopen MouseMeld to try again.")
                 } else if runtime.configurationAttention == .saveFailed {
                     Text("Your changes could not be saved. Your previous settings are still in use.")
                 }
             }
             Section("What changes") {
-                Text("When active, MacMouseFlow applies your direction and amount settings to line-based scrolling.")
+                Text("When active, MouseMeld applies your direction and amount settings to line-based scrolling.")
                 Text("Continuous pixel-based scrolling is preserved.")
-                Text("MacMouseFlow does not identify individual pointing devices.")
+                Text("MouseMeld does not identify individual pointing devices.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -328,7 +328,7 @@ private struct AccessPane: View {
     var body: some View {
         Form {
             Section("Accessibility Access") {
-                Text("MacMouseFlow needs Accessibility Access before it can watch supported scroll input.")
+                Text("MouseMeld needs Accessibility Access before it can watch supported scroll input.")
                 LabeledContent("Access", value: runtime.hasAccessibilityAccess ? "Available" : "Needed")
                 if !runtime.hasAccessibilityAccess {
                     Button("Request Accessibility Access") { runtime.requestAccessibilityAccess() }
@@ -340,7 +340,7 @@ private struct AccessPane: View {
             }
             if runtime.state == .inputUnavailable {
                 Section("Input") {
-                    Text(runtime.canRefresh ? "Changes are not currently being applied. Check access, then try again." : "Scrolling changes are off. Quit and reopen MacMouseFlow to use your saved settings.")
+                    Text(runtime.canRefresh ? "Changes are not currently being applied. Check access, then try again." : "Scrolling changes are off. Quit and reopen MouseMeld to use your saved settings.")
                     Button("Try Again") { runtime.refresh() }
                         .disabled(!runtime.canRefresh)
                 }
@@ -357,7 +357,7 @@ private struct DiagnosticsPane: View {
     var body: some View {
         Form {
             Section("Runtime") {
-                Text("Check whether MacMouseFlow can currently monitor eligible scroll input.")
+                Text("Check whether MouseMeld can currently monitor eligible scroll input.")
                 LabeledContent("Availability", value: runtime.state.userLabel)
                 Button("Check Input Now") { runtime.refresh() }
                     .disabled(!runtime.canRefresh)
@@ -373,7 +373,7 @@ private struct AboutPane: View {
 
     var body: some View {
         Form {
-            Section("MacMouseFlow") {
+            Section("MouseMeld") {
                 Text("View the version and build of the app you are using.")
                 LabeledContent("Version", value: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development")
                 LabeledContent("Build", value: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")

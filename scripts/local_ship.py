@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local macOS ship pipeline for MacMouseFlow.
+"""Local macOS ship pipeline for MouseMeld.
 
 Builds a self-contained, ad-hoc-signed local development artifact and exercises its
 install / update / rollback / uninstall lifecycle. Lifecycle tooling owns only
@@ -31,9 +31,9 @@ from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLE_ID = "io.github.webkitvn.macmouseflow"
-APP_NAME = "MacMouseFlow.app"
-EXECUTABLE_NAME = "macmouseflow"
+BUNDLE_ID = "io.github.webkitvn.mousemeld"
+APP_NAME = "MouseMeld.app"
+EXECUTABLE_NAME = "mousemeld"
 LAUNCH_TIMEOUT_SECONDS = 5.0
 LAUNCH_HEALTH_SECONDS = 1.0
 LAUNCH_CLEANUP_SECONDS = 1.0
@@ -266,7 +266,7 @@ def _clear_pipeline_temp_state() -> CleanupResult:
 # Real runtime configuration is native-owned (ADR 0004) and outside this pipeline's
 # control; the pipeline only ever reads existence/length/hash, never contents.
 def config_path() -> Path:
-    return home() / "Library" / "Application Support" / "MacMouseFlow" / "configuration.json"
+    return home() / "Library" / "Application Support" / "MouseMeld" / "configuration.json"
 
 
 # Opaque sentinel used only when real configuration is absent, kept outside LocalShip/
@@ -478,7 +478,7 @@ class _ProbeCapture:
         self._stop = threading.Event()
         self._finished = threading.Event()
         self._started = False
-        self._thread = threading.Thread(target=self._drain, name="MacMouseFlow launch-probe capture", daemon=True)
+        self._thread = threading.Thread(target=self._drain, name="MouseMeld launch-probe capture", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
@@ -780,7 +780,7 @@ def _render_info_plist() -> bytes:
         {
             "CFBundleIdentifier": BUNDLE_ID,
             "CFBundleExecutable": EXECUTABLE_NAME,
-            "CFBundleName": "MacMouseFlow",
+            "CFBundleName": "MouseMeld",
             "CFBundlePackageType": "APPL",
             "CFBundleShortVersionString": "0.0.0-local",
             "CFBundleVersion": "1",

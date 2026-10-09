@@ -106,7 +106,7 @@ jobs:
         # architecture proxy.
         run: |
           set -euo pipefail
-          archs="$(lipo -archs target/local-ship/candidate/MacMouseFlow.app/Contents/MacOS/macmouseflow)"
+          archs="$(lipo -archs target/local-ship/candidate/MouseMeld.app/Contents/MacOS/mousemeld)"
           if [ "$archs" != "arm64" ]; then
             echo "expected a thin arm64 executable, got: $archs" >&2
             exit 1
@@ -116,13 +116,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/local_ship.py package-for-transport \
-            target/local-ship/candidate/MacMouseFlow.app \
-            target/local-ship/transport/MacMouseFlow.app.zip
-          echo "sha256=$(shasum -a 256 target/local-ship/transport/MacMouseFlow.app.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            target/local-ship/candidate/MouseMeld.app \
+            target/local-ship/transport/MouseMeld.app.zip
+          echo "sha256=$(shasum -a 256 target/local-ship/transport/MouseMeld.app.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: local-ship-candidate
-          path: target/local-ship/transport/MacMouseFlow.app.zip
+          path: target/local-ship/transport/MouseMeld.app.zip
           retention-days: 1
 
   macos14-lifecycle:
@@ -143,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/local_ship.py verify-transport \
-            target/local-ship/transport/MacMouseFlow.app.zip \
+            target/local-ship/transport/MouseMeld.app.zip \
             "${{ needs.local-ship-candidate.outputs.sha256 }}" \
             target/local-ship/received
       - name: Verify received architecture is thin arm64 (ADR-0006)
@@ -151,13 +151,13 @@ jobs:
         # never inferred from the macos-14 runner's OS-version label.
         run: |
           set -euo pipefail
-          archs="$(lipo -archs target/local-ship/received/MacMouseFlow.app/Contents/MacOS/macmouseflow)"
+          archs="$(lipo -archs target/local-ship/received/MouseMeld.app/Contents/MacOS/mousemeld)"
           if [ "$archs" != "arm64" ]; then
             echo "expected a thin arm64 executable, got: $archs" >&2
             exit 1
           fi
       - name: Install the transported candidate
-        run: python3 scripts/local_ship.py install target/local-ship/received/MacMouseFlow.app
+        run: python3 scripts/local_ship.py install target/local-ship/received/MouseMeld.app
       - name: Exercise a genuine controlled failed-update rollback
         run: |
           set -euo pipefail
@@ -167,19 +167,19 @@ jobs:
           # candidate under test.
           rm -rf target/local-ship/received-bad
           mkdir -p target/local-ship/received-bad
-          cp -R target/local-ship/received/MacMouseFlow.app target/local-ship/received-bad/MacMouseFlow.app
+          cp -R target/local-ship/received/MouseMeld.app target/local-ship/received-bad/MouseMeld.app
           printf 'int main(void) { return 9; }\n' > target/local-ship/received-bad/bad_main.c
           # Explicit -arch arm64 (ADR-0006, Oracle fix #2, Issue #41): the synthetic
           # failed-update candidate's architecture is asserted directly, never
           # inferred from this runner's default toolchain target.
-          cc -arch arm64 -std=c11 target/local-ship/received-bad/bad_main.c -o target/local-ship/received-bad/MacMouseFlow.app/Contents/MacOS/macmouseflow
-          codesign --sign - --force target/local-ship/received-bad/MacMouseFlow.app
-          archs="$(lipo -archs target/local-ship/received-bad/MacMouseFlow.app/Contents/MacOS/macmouseflow)"
+          cc -arch arm64 -std=c11 target/local-ship/received-bad/bad_main.c -o target/local-ship/received-bad/MouseMeld.app/Contents/MacOS/mousemeld
+          codesign --sign - --force target/local-ship/received-bad/MouseMeld.app
+          archs="$(lipo -archs target/local-ship/received-bad/MouseMeld.app/Contents/MacOS/mousemeld)"
           if [ "$archs" != "arm64" ]; then
             echo "expected the synthetic failed-update candidate to be a thin arm64 executable, got: $archs" >&2
             exit 1
           fi
-          if python3 scripts/local_ship.py install target/local-ship/received-bad/MacMouseFlow.app; then
+          if python3 scripts/local_ship.py install target/local-ship/received-bad/MouseMeld.app; then
             echo "expected the deliberately broken candidate to fail its canonical-path launch probe" >&2
             exit 1
           fi
@@ -187,11 +187,11 @@ jobs:
           # CI is the explicit operator only after the canonical active bundle is
           # independently verified as restored; this is not a lifecycle command.
           python3 scripts/local_ship.py verify-active
-          rm -f "$HOME/Library/Application Support/io.github.webkitvn.macmouseflow/LocalShip/lifecycle.json"
+          rm -f "$HOME/Library/Application Support/io.github.webkitvn.mousemeld/LocalShip/lifecycle.json"
       - name: Exercise update, explicit rollback, and uninstall lifecycle compatibility
         run: |
           set -euo pipefail
-          python3 scripts/local_ship.py install target/local-ship/received/MacMouseFlow.app
+          python3 scripts/local_ship.py install target/local-ship/received/MouseMeld.app
           python3 scripts/local_ship.py rollback
           python3 scripts/local_ship.py verify-active
           python3 scripts/local_ship.py uninstall
