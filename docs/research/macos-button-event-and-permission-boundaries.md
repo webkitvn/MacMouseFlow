@@ -115,9 +115,21 @@ Sources:
 
 **NOT_PROVEN:** no verified source gives a numeric timeout, guarantees that re-enabling succeeds or remains continuously enabled, or defines permanent-teardown behavior. A future runtime must not claim a recovery/readiness guarantee from these APIs alone.
 
-### 6. Listen/post and Accessibility APIs report distinct documented states; mouse-only sufficiency is NOT_PROVEN
+### 6. Apple documents a mode-based keyboard authorization split; mouse-only sufficiency is NOT_PROVEN
 
-Core Graphics exposes current-process checks and prompt-capable requests:
+Apple’s WWDC 2019 keyboard-monitoring sample uses `CGEventTapCreate` for key press/release events. At 19:56–20:58, the transcript says the first call can return `nil` while a dialog directs the user to approve background keyboard monitoring; it then identifies `IOHIDCheckAccess(..., kIOHIDRequestTypeListenEvent)` as the no-prompt status check.
+
+At 35:32–36:29, Apple changes that sample’s `listenOnly` parameter to `defaultTap` and states (including the transcript’s wording):
+
+> `If I change the listenOnly parameter to defaultTap, like that, CGEventTapCreate now creates a modifying event tab, where the callback can alter the event stream.`
+>
+> `And this means now your app has a way to influence what events are delivered to the rest of the system, where a listen-only event requires authorization for input monitoring, a modifying event app requires authorization for accessibility features.`
+
+Source: [Apple WWDC 2019, “Advances in macOS Security”](https://developer.apple.com/videos/play/wwdc2019/701/) (transcript timestamps 19:56–20:58 and 35:32–36:29).
+
+**DOCUMENTED:** for the described keyboard event-tap use, Apple distinguishes `listenOnly`/Input Monitoring from `defaultTap` modifying-tap/Accessibility authorization. This is a mode-based split, not a documented simultaneous requirement for both permissions. The legacy SDK clause that mentions key-up/key-down events does not negate this newer Apple evidence.
+
+Core Graphics separately exposes current-process checks and prompt-capable requests:
 
 > `Checks whether the current process already has event listening access`
 >
@@ -146,13 +158,9 @@ Source and SDK provenance:
 - [Apple `AXIsProcessTrustedWithOptions`](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions)
 - Installed SDK `AXUIElement.h`, lines 55–74, captured at `/tmp/work-147-sdk-excerpts.log` (SHA-256 `2067f5ce72361a1301239f93e00f265f410d7a035214e96c85dcf060dcf01ec6`).
 
-The event-tap header’s explicit accessibility condition is keyboard-specific:
+The WWDC session separately uses `IOHIDCheckAccess(..., kIOHIDRequestTypePostEvent)` to test approval to synthesize input. The listen/post APIs and `AXIsProcessTrusted...` retain their documented purposes; Apple does not document them as equivalent checks or as a convenience-wrapper mapping.
 
-> `Taps placed at ... may only receive key up and down events if access for assistive devices is enabled ...`
-
-It is not a blanket statement about mouse events.
-
-**NOT_PROVEN:** from the verified documents, the required and sufficient permission combination on macOS 14 for a *mouse-only* passive tap, active modification/suppression of `otherMouse*`, or its behavior after permission revocation is not established. In particular, do **not** claim that both Accessibility and Input Monitoring are mandatory, nor that either alone is sufficient. Likewise, listen/post preflight status is documented by purpose, but not documented here as a complete operational readiness verdict for a particular event-tap configuration.
+**NOT_PROVEN:** this 2019 keyboard evidence is not an actual macOS 14 mouse-only test. Operational sufficiency for a mouse-only passive tap, an active `otherMouse*` modification/suppression tap, delivery, permission revocation/recovery, and device mapping on macOS 14 remains unproven. The documented purpose of a listen/post preflight is also not a complete operational-readiness verdict for a particular mouse event-tap configuration.
 
 ### 7. Compatibility and current repository boundary — DOCUMENTED / code observation
 
@@ -174,7 +182,7 @@ No current trace or System Settings receipt inspected here proves granted permis
 
 No prototype was run for this research. A narrow, explicitly authorized macOS 14+ prototype is required before an implementation can claim any of the following:
 
-1. For the declared signing/distribution context, which permission state(s) are sufficient for a passive button-only tap, and independently for an active button-only tap that preserves or returns `NULL`; how does each behave after grant/revocation?
+1. Whether the documented keyboard `listenOnly`/Input Monitoring versus `defaultTap`/Accessibility split predicts actual macOS 14 behavior for a passive button-only tap and independently for an active button-only tap that preserves or returns `NULL`; record behavior after grant/revocation.
 2. Which observed vendor/device button presses are delivered as `otherMouseDown`/`otherMouseUp`/`otherMouseDragged`, and what `mouseEventButtonNumber` values arrive? Record that as observed device behavior, not a universal mapping or `Device Identity` rule.
 3. Under preserve versus suppress of down/up/drag, what delivery sequence reaches a target application, including unmatched members and tap-disable/re-enable boundaries?
 
@@ -185,7 +193,7 @@ These are feasibility observations, not permission policy or product-action choi
 1. A future planner may treat `otherMouseDown`/`otherMouseUp`/`otherMouseDragged` plus `mouseEventButtonNumber` as documented event-level data, while retaining Unknown `Device Identity`.
 2. A future Action decision may choose preserve/modify/delete only after it defines its own press/release/drag semantics; Apple’s callback contract supports those primitives but does not choose the policy.
 3. Any plan involving synthetic reposting must own loop behavior explicitly; direct callback return is the documented alternative for pass-through, mutation, and suppression.
-4. Permission UI/readiness and runtime behavior must remain conditional until the bounded prototype resolves the stated macOS 14+ facts.
+4. A future planner may use the documented keyboard mode split to avoid a blanket or simultaneous-permissions claim. Mouse-only permission UI/readiness and runtime behavior remain conditional until the bounded prototype resolves the stated macOS 14+ facts; this artifact makes no UI or runtime decision.
 
 ## Primary-source index
 
@@ -204,3 +212,4 @@ These are feasibility observations, not permission policy or product-action choi
 - [Preflight post access](https://developer.apple.com/documentation/coregraphics/cgpreflightposteventaccess())
 - [Request post access](https://developer.apple.com/documentation/coregraphics/cgrequestposteventaccess())
 - [Trusted Accessibility client with options](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions)
+- [WWDC 2019: Advances in macOS Security](https://developer.apple.com/videos/play/wwdc2019/701/) (keyboard-monitoring sample, transcript timestamps 19:56–20:58 and 35:32–36:29)
