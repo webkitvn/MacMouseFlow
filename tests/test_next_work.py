@@ -71,6 +71,62 @@ class NextWorkContractTests(unittest.TestCase):
             }
         ]
 
+    @staticmethod
+    def planning_responses():
+        def issue(number, labels, *, state="OPEN", assignees=None, blocked_by=None, sub_issues=None):
+            return {
+                "number": number,
+                "title": f"Issue {number}",
+                "body": "",
+                "state": state,
+                "labels": [{"name": label} for label in labels],
+                "assignees": assignees or [],
+                "blockedBy": blocked_by or [],
+                "subIssues": sub_issues or [],
+                "url": f"u{number}",
+            }
+
+        responses = NextWorkContractTests.base_responses(
+            [{"number": 90, "title": "Phase", "labels": [{"name": "work:current"}], "url": "u90"}]
+        )
+        responses.update(
+            {
+                "issue view 90 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    90, ["work:current", "wayfinder:map"], sub_issues=[{"number": number} for number in range(80, 89)]
+                ),
+                "issue view 80 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(80, ["wayfinder:map"]),
+                "issue view 81 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    81, ["wayfinder:task", "priority:P0"], sub_issues=[{"number": 86}]
+                ),
+                "issue view 82 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    82,
+                    ["wayfinder:research", "priority:P0"],
+                    blocked_by=[{"number": 12, "state": "CLOSED"}],
+                ),
+                "issue view 83 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    83, ["wayfinder:task", "priority:P0"], assignees=[{"login": "agent"}]
+                ),
+                "issue view 84 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    84, ["wayfinder:task", "priority:P1"]
+                ),
+                "issue view 85 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    85,
+                    ["wayfinder:grilling", "priority:P0"],
+                    blocked_by=[{"number": 13, "state": "OPEN"}],
+                ),
+                "issue view 86 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    86, ["wayfinder:prototype", "priority:P0"]
+                ),
+                "issue view 87 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    87, ["execution:task", "priority:P0"]
+                ),
+                "issue view 88 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url": issue(
+                    88, ["wayfinder:task", "priority:P0"], state="CLOSED"
+                ),
+            }
+        )
+        return responses
+
     def test_frontier_reports_missing_gh_executable_without_traceback(self):
         env = os.environ.copy()
         env["GH_BIN"] = str(ROOT / "definitely-missing-gh")
@@ -103,6 +159,50 @@ class NextWorkContractTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("AMBIGUOUS_CURRENT_CONTEXT", result.stderr)
+
+    def test_planning_frontier_selects_ordered_unblocked_unclaimed_leaves(self):
+        result = self.run_command("frontier", self.planning_responses())
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["P0 #82 Issue 82 u82", "P0 #86 Issue 86 u86", "P1 #84 Issue 84 u84"])
+
+    def test_planning_context_rejects_invalid_and_mixed_root_kinds(self):
+        for labels, message in (
+            (["work:current"], "is not an execution:epic"),
+            (["work:current", "wayfinder:map", "execution:epic"], "must not mix"),
+        ):
+            responses = self.planning_responses()
+            responses[
+                "issue view 90 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url"
+            ]["labels"] = [{"name": label} for label in labels]
+
+            result = self.run_command("next", responses)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("INVALID_CURRENT_CONTEXT", result.stderr)
+            self.assertIn(message, result.stderr)
+
+    def test_planning_map_is_a_container_even_with_a_claimable_label(self):
+        responses = self.planning_responses()
+        responses[
+            "issue view 80 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url"
+        ]["labels"] = [{"name": label} for label in ["wayfinder:map", "wayfinder:task", "priority:P0"]]
+
+        result = self.run_command("frontier", responses)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("#80", result.stdout)
+
+    def test_planning_leaf_requires_exactly_one_priority(self):
+        key = "issue view 84 -R owner/repo --json number,title,body,state,labels,assignees,blockedBy,subIssues,url"
+        for labels in (["wayfinder:task"], ["wayfinder:task", "priority:P0", "priority:P1"]):
+            responses = self.planning_responses()
+            responses[key]["labels"] = [{"name": label} for label in labels]
+
+            result = self.run_command("next", responses)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("INVALID_PRIORITY_METADATA", result.stderr)
 
     def test_next_stops_when_tracker_declares_relationship_compatibility_fallback(self):
         responses = self.base_responses(self.current_epic())

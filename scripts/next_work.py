@@ -8,6 +8,7 @@ import sys
 
 ISSUE_FIELDS = "number,title,body,state,labels,assignees,blockedBy,subIssues,url"
 PRIORITY_RANK = {"priority:P0": 0, "priority:P1": 1, "priority:P2": 2}
+PLANNING_LEAF_LABELS = {"wayfinder:grilling", "wayfinder:research", "wayfinder:prototype", "wayfinder:task"}
 
 
 def fail(code: str, message: str) -> "NoReturn":
@@ -137,7 +138,7 @@ def task_priority(task):
     if len(priorities) != 1:
         fail(
             "INVALID_PRIORITY_METADATA",
-            f"execution task #{task.get('number')} must have exactly one priority:P0/P1/P2 label",
+            f"claimable work #{task.get('number')} must have exactly one priority:P0/P1/P2 label",
         )
     return priorities[0]
 
@@ -153,21 +154,37 @@ def assert_native_relationship_mode(current):
 
 def frontier(repo: str, current_summary) -> list[tuple[str, dict]]:
     current = issue_view(repo, current_summary["number"])
-    if "execution:epic" not in label_names(current):
+    context_kinds = label_names(current) & {"execution:epic", "wayfinder:map"}
+    if not context_kinds:
         fail(
             "INVALID_CURRENT_CONTEXT",
             f"open work:current issue #{current.get('number')} is not an execution:epic",
         )
+    if len(context_kinds) > 1:
+        fail(
+            "INVALID_CURRENT_CONTEXT",
+            f"open work:current issue #{current.get('number')} must not mix execution:epic and wayfinder:map",
+        )
+    context_kind = context_kinds.pop()
 
     assert_native_relationship_mode(current)
 
     open_tasks = []
     for issue in collect_descendants(repo, current):
-        if "execution:task" in label_names(issue) and is_open(issue):
+        labels = label_names(issue)
+        is_planning_leaf = (
+            context_kind == "wayfinder:map"
+            and "wayfinder:map" not in labels
+            and not issue.get("subIssues")
+            and bool(labels & PLANNING_LEAF_LABELS)
+        )
+        if (context_kind == "execution:epic" and "execution:task" in labels or is_planning_leaf) and is_open(issue):
             priority = task_priority(issue)
             open_tasks.append((priority, issue))
 
     if not open_tasks:
+        if context_kind == "wayfinder:map":
+            fail("NO_OPEN_LEAF_WORK", "current planning context has no open Wayfinder leaf descendants")
         fail("NO_OPEN_LEAF_WORK", "current execution context has no open execution:task descendants")
 
     eligible = []
@@ -184,12 +201,13 @@ def frontier(repo: str, current_summary) -> list[tuple[str, dict]]:
         eligible.append((priority, task))
 
     if not eligible:
+        work_kind = "planning work" if context_kind == "wayfinder:map" else "execution tasks"
         if blocked_count == len(open_tasks):
-            fail("BLOCKED_FRONTIER", "all open execution tasks are blocked")
+            fail("BLOCKED_FRONTIER", f"all open {work_kind} are blocked")
         unblocked_count = len(open_tasks) - blocked_count
         if unblocked_count > 0 and claimed_count == unblocked_count:
-            fail("FRONTIER_FULLY_CLAIMED", "all unblocked execution tasks are claimed")
-        fail("NO_FRONTIER", "all open execution tasks are blocked or claimed")
+            fail("FRONTIER_FULLY_CLAIMED", f"all unblocked {work_kind} are claimed")
+        fail("NO_FRONTIER", f"all open {work_kind} are blocked or claimed")
 
     eligible.sort(key=lambda item: (PRIORITY_RANK[item[0]], item[1]["number"]))
     return eligible

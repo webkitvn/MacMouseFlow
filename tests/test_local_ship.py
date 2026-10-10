@@ -1195,8 +1195,15 @@ class LifecycleTests(FakeHomeTestCase):
         # canonical active path must simply stay empty, not the broken candidate.
         before_evidence = local_ship.capture_config_evidence()
         failing = make_bundle(self.candidate_root, name="failing.app", exit_code=9)
-        result = local_ship.install(failing)
+        executable = local_ship.active_app_path() / "Contents" / "MacOS" / local_ship.EXECUTABLE_NAME
+        with mock.patch.object(
+            local_ship,
+            "guarded_launch_probe",
+            return_value=local_ship.BundleValidation(False, "simulated canonical-path launch probe failure"),
+        ) as probe:
+            result = local_ship.install(failing)
 
+        probe.assert_called_once_with(executable)
         self.assertFalse(result.ok)
         self.assertIn("canonical-path launch probe failed", result.reason)
         self.assertIn("no prior active bundle existed", result.reason)
